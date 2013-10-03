@@ -1,0 +1,27 @@
+Source: botocore
+Maintainer: Mitch Garnaat <garnaat@amazon.com>
+Section: python
+Priority: optional
+Build-Depends: python-setuptools (>= 0.6b3), debhelper (>= 7), python-support (>= 0.8.4)
+Standards-Version: 3.8.4
+
+Package: python-botocore
+Architecture: all
+Depends: ${misc:Depends}, ${python:Depends}, python-six (>= 1.1.0) | python3-six (>= 1.1.0)
+XB-Python-Version: ${python:Versions}
+Provides: ${python:Provides}
+Description: Low-level, data-driven core of boto 3.
+ botocore
+ ========
+ .
+ |Build Status|
+ .
+ A low-level interface to a growing number of Amazon Web Services. The
+ botocore package is the foundation for
+ `AWS-CLI <https://github.com/aws/aws-cli>`__.
+ .
+ `Documentation <https://botocore.readthedocs.org/en/latest/>`__
+ .
+ .. |Build Status| image:: https://travis-ci.org/boto/botocore.png?branch=develop
+    :target: https://travis-ci.org/boto/botocore
+ .
