@@ -1,24 +1,16 @@
-# Copyright (c) 2013 Amazon.com, Inc. or its affiliates.  All Rights Reserved
+# Copyright 2012-2014 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 #
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish, dis-
-# tribute, sublicense, and/or sell copies of the Software, and to permit
-# persons to whom the Software is furnished to do so, subject to the fol-
-# lowing conditions:
+# Licensed under the Apache License, Version 2.0 (the "License"). You
+# may not use this file except in compliance with the License. A copy of
+# the License is located at
 #
-# The above copyright notice and this permission notice shall be included
-# in all copies or substantial portions of the Software.
+# http://aws.amazon.com/apache2.0/
 #
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABIL-
-# ITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-# SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
-# WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-# IN THE SOFTWARE.
-#
+# or in the "license" file accompanying this file. This file is
+# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
+# ANY KIND, either express or implied. See the License for the specific
+# language governing permissions and limitations under the License.
+
 from itertools import tee
 try:
     from itertools import zip_longest
@@ -34,6 +26,7 @@ except NameError:
 
 import jmespath
 from botocore.exceptions import PaginationError
+from botocore.utils import set_value_from_jmespath
 
 
 class Paginator(object):
@@ -43,7 +36,11 @@ class Paginator(object):
         self._output_token = self._get_output_tokens(self._pagination_cfg)
         self._input_token = self._get_input_tokens(self._pagination_cfg)
         self._more_results = self._get_more_results_token(self._pagination_cfg)
-        self._result_key = self._get_result_key(self._pagination_cfg)
+        self._result_keys = self._get_result_keys(self._pagination_cfg)
+
+    @property
+    def result_keys(self):
+        return self._result_keys
 
     def _get_output_tokens(self, config):
         output = []
@@ -61,15 +58,16 @@ class Paginator(object):
         return input_token
 
     def _get_more_results_token(self, config):
-        more_results = config.get('more_key')
+        more_results = config.get('more_results')
         if more_results is not None:
             return jmespath.compile(more_results)
 
-    def _get_result_key(self, config):
+    def _get_result_keys(self, config):
         result_key = config.get('result_key')
         if result_key is not None:
             if not isinstance(result_key, list):
                 result_key = [result_key]
+            result_key = [jmespath.compile(rk) for rk in result_key]
             return result_key
 
     def paginate(self, endpoint, **kwargs):
@@ -88,30 +86,37 @@ class Paginator(object):
         page_params = self._extract_paging_params(kwargs)
         return PageIterator(self._operation, self._input_token,
                             self._output_token, self._more_results,
-                            self._result_key, page_params['max_items'],
+                            self._result_keys, page_params['max_items'],
                             page_params['starting_token'],
                             endpoint, kwargs)
 
     def _extract_paging_params(self, kwargs):
+        max_items = kwargs.pop('max_items', None)
+        if max_items is not None:
+            max_items = int(max_items)
         return {
-            'max_items': kwargs.pop('max_items', None),
+            'max_items': max_items,
             'starting_token': kwargs.pop('starting_token', None),
         }
 
 
 class PageIterator(object):
     def __init__(self, operation, input_token, output_token, more_results,
-                 result_key, max_items, starting_token, endpoint, op_kwargs):
+                 result_keys, max_items, starting_token, endpoint, op_kwargs):
         self._operation = operation
         self._input_token = input_token
         self._output_token = output_token
         self._more_results = more_results
-        self._result_key = result_key
+        self._result_keys = result_keys
         self._max_items = max_items
         self._starting_token = starting_token
         self._endpoint = endpoint
         self._op_kwargs = op_kwargs
         self._resume_token = None
+
+    @property
+    def result_keys(self):
+        return self._result_keys
 
     @property
     def resume_token(self):
@@ -131,7 +136,7 @@ class PageIterator(object):
         # The number of items from result_key we've seen so far.
         total_items = 0
         first_request = True
-        primary_result_key = self._result_key[0]
+        primary_result_key = self.result_keys[0]
         starting_truncation = 0
         self._inject_starting_token(current_kwargs)
         while True:
@@ -145,7 +150,10 @@ class PageIterator(object):
                     starting_truncation = self._handle_first_request(
                         parsed, primary_result_key, starting_truncation)
                 first_request = False
-            num_current_response = len(parsed.get(primary_result_key, []))
+            current_response = primary_result_key.search(parsed)
+            if current_response is None:
+                current_response = []
+            num_current_response = len(current_response)
             truncate_amount = 0
             if self._max_items is not None:
                 truncate_amount = (total_items + num_current_response) \
@@ -196,23 +204,33 @@ class PageIterator(object):
         # First we need to slice into the array and only return
         # the truncated amount.
         starting_truncation = self._parse_starting_token()[1]
-        parsed[primary_result_key] = parsed[
-            primary_result_key][starting_truncation:]
+        all_data = primary_result_key.search(parsed)
+        set_value_from_jmespath(
+            parsed,
+            primary_result_key.expression,
+            all_data[starting_truncation:]
+        )
         # We also need to truncate any secondary result keys
         # because they were not truncated in the previous last
         # response.
-        for token in self._result_key:
+        for token in self.result_keys:
             if token == primary_result_key:
                 continue
-            parsed[token] = []
+            set_value_from_jmespath(parsed, token.expression, [])
         return starting_truncation
 
     def _truncate_response(self, parsed, primary_result_key, truncate_amount,
                            starting_truncation, next_token):
-        original = parsed.get(primary_result_key, [])
+        original = primary_result_key.search(parsed)
+        if original is None:
+            original = []
         amount_to_keep = len(original) - truncate_amount
         truncated = original[:amount_to_keep]
-        parsed[primary_result_key] = truncated
+        set_value_from_jmespath(
+            parsed,
+            primary_result_key.expression,
+            truncated
+        )
         # The issue here is that even though we know how much we've truncated
         # we need to account for this globally including any starting
         # left truncation. For example:
@@ -237,20 +255,30 @@ class PageIterator(object):
         return next_tokens
 
     def result_key_iters(self):
-        teed_results = tee(self, len(self._result_key))
+        teed_results = tee(self, len(self.result_keys))
         return [ResultKeyIterator(i, result_key) for i, result_key
-                in zip(teed_results, self._result_key)]
+                in zip(teed_results, self.result_keys)]
 
     def build_full_result(self):
         iterators = self.result_key_iters()
         response = {}
         key_names = [i.result_key for i in iterators]
         for key in key_names:
-            response[key] = []
+            set_value_from_jmespath(response, key.expression, [])
         for vals in zip_longest(*iterators):
             for k, val in zip(key_names, vals):
                 if val is not None:
-                    response[k].append(val)
+                    # We can't just do an append here, since we don't
+                    # necessarily have a reference (& the expression isn't as
+                    # easy as normal keys).
+                    # So we'll search for the value, create an empty list if
+                    # we don't find it, then append the ``val`` to the list &
+                    # set it via the expression.
+                    existing = k.search(response)
+                    if not existing:
+                        existing = []
+                    existing.append(val)
+                    set_value_from_jmespath(response, k.expression, existing)
         if self.resume_token is not None:
             response['NextToken'] = self.resume_token
         return response
@@ -283,5 +311,8 @@ class ResultKeyIterator(object):
 
     def __iter__(self):
         for _, page in self._pages_iterator:
-            for result in page.get(self.result_key, []):
+            results = self.result_key.search(page)
+            if results is None:
+                results = []
+            for result in results:
                 yield result

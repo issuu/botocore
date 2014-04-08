@@ -1,28 +1,28 @@
 # Copyright (c) 2012-2013 Mitch Garnaat http://garnaat.org/
-# Copyright 2012-2013 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# Copyright 2012-2014 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 #
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish, dis-
-# tribute, sublicense, and/or sell copies of the Software, and to permit
-# persons to whom the Software is furnished to do so, subject to the fol-
-# lowing conditions:
+# Licensed under the Apache License, Version 2.0 (the "License"). You
+# may not use this file except in compliance with the License. A copy of
+# the License is located at
 #
-# The above copyright notice and this permission notice shall be included
-# in all copies or substantial portions of the Software.
+# http://aws.amazon.com/apache2.0/
 #
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABIL-
-# ITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-# SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
-# WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-# IN THE SOFTWARE.
-#
-from requests import models
+# or in the "license" file accompanying this file. This file is
+# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
+# ANY KIND, either express or implied. See the License for the specific
+# language governing permissions and limitations under the License.
 
-from botocore.compat import HTTPHeaders
+import logging
+
+import six
+from botocore.vendored.requests import models
+from botocore.vendored.requests.sessions import REDIRECT_STATI
+
+from botocore.compat import HTTPHeaders, file_type
+from botocore.exceptions import UnseekableStreamError
+
+
+logger = logging.getLogger(__name__)
 
 
 class AWSRequest(models.RequestEncodingMixin, models.Request):
@@ -77,3 +77,30 @@ class AWSPreparedRequest(models.PreparedRequest):
     def __init__(self, original_request):
         self.original = original_request
         super(AWSPreparedRequest, self).__init__()
+        self.hooks.setdefault('response', []).append(
+            self.reset_stream_on_redirect)
+
+    def reset_stream_on_redirect(self, response, **kwargs):
+        if response.status_code in REDIRECT_STATI and \
+                self._looks_like_file(self.body):
+            logger.debug("Redirect received, rewinding stream: %s", self.body)
+            self.reset_stream()
+
+    def _looks_like_file(self, body):
+        return hasattr(body, 'read') and hasattr(body, 'seek')
+
+    def reset_stream(self):
+        # Trying to reset a stream when there is a no stream will
+        # just immediately return.  It's not an error, it will produce
+        # the same result as if we had actually reset the stream (we'll send
+        # the entire body contents again if we need to).
+        # Same case if the body is a string/bytes type.
+        if self.body is None or isinstance(self.body, six.text_type) or \
+                isinstance(self.body, six.binary_type):
+            return
+        try:
+            logger.debug("Rewinding stream: %s", self.body)
+            self.body.seek(0)
+        except Exception as e:
+            logger.debug("Unable to rewind stream: %s", e)
+            raise UnseekableStreamError(stream_object=self.body)

@@ -1,25 +1,17 @@
 # Copyright (c) 2012-2013 Mitch Garnaat http://garnaat.org/
-# Copyright 2012-2013 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# Copyright 2012-2014 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 #
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish, dis-
-# tribute, sublicense, and/or sell copies of the Software, and to permit
-# persons to whom the Software is furnished to do so, subject to the fol-
-# lowing conditions:
+# Licensed under the Apache License, Version 2.0 (the "License"). You
+# may not use this file except in compliance with the License. A copy of
+# the License is located at
 #
-# The above copyright notice and this permission notice shall be included
-# in all copies or substantial portions of the Software.
+# http://aws.amazon.com/apache2.0/
 #
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABIL-
-# ITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-# SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
-# WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-# IN THE SOFTWARE.
-#
+# or in the "license" file accompanying this file. This file is
+# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
+# ANY KIND, either express or implied. See the License for the specific
+# language governing permissions and limitations under the License.
+
 import base64
 import datetime
 from hashlib import sha256
@@ -28,6 +20,8 @@ import hmac
 import logging
 from email.utils import formatdate
 from operator import itemgetter
+import functools
+
 from botocore.exceptions import NoCredentialsError
 from botocore.utils import normalize_url_path
 from botocore.compat import HTTPHeaders
@@ -38,18 +32,26 @@ logger = logging.getLogger(__name__)
 
 EMPTY_SHA256_HASH = (
     'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855')
+# This is the buffer size used when calculating sha256 checksums.
+# Experimenting with various buffer sizes showed that this value generally
+# gave the best result (in terms of performance).
+PAYLOAD_BUFFER = 1024 * 1024
 
 
-class SigV2Auth(object):
+class BaseSigner(object):
+    REQUIRES_REGION = False
+
+    def add_auth(self, request):
+        raise NotImplementedError("add_auth")
+
+
+class SigV2Auth(BaseSigner):
     """
     Sign a request with Signature V2.
     """
-    def __init__(self, credentials, service_name=None, region_name=None):
+
+    def __init__(self, credentials):
         self.credentials = credentials
-        if self.credentials is None:
-            raise NoCredentialsError
-        self.service_name = service_name
-        self.region_name = region_name
 
     def calc_signature(self, request, params):
         logger.debug("Calculating signature using v2 auth.")
@@ -65,8 +67,8 @@ class SigV2Auth(object):
         pairs = []
         for key in sorted(params):
             value = params[key]
-            pairs.append(quote(key, safe='') + '=' +
-                         quote(value, safe='-_~'))
+            pairs.append(quote(key.encode('utf-8'), safe='') + '=' +
+                         quote(value.encode('utf-8'), safe='-_~'))
         qs = '&'.join(pairs)
         string_to_sign += qs
         logger.debug('String to sign: %s', string_to_sign)
@@ -80,6 +82,8 @@ class SigV2Auth(object):
         # Because of this we have to parse the query params
         # from the request body so we can update them with
         # the sigv2 auth params.
+        if self.credentials is None:
+            raise NoCredentialsError
         if request.data:
             # POST
             params = request.data
@@ -97,15 +101,13 @@ class SigV2Auth(object):
         return request
 
 
-class SigV3Auth(object):
-    def __init__(self, credentials, service_name=None, region_name=None):
+class SigV3Auth(BaseSigner):
+    def __init__(self, credentials):
         self.credentials = credentials
-        if self.credentials is None:
-            raise NoCredentialsError
-        self.service_name = service_name
-        self.region_name = region_name
 
     def add_auth(self, request):
+        if self.credentials is None:
+            raise NoCredentialsError
         if 'Date' not in request.headers:
             request.headers['Date'] = formatdate(usegmt=True)
         if self.credentials.token:
@@ -120,19 +122,21 @@ class SigV3Auth(object):
         request.headers['X-Amzn-Authorization'] = signature
 
 
-class SigV4Auth(object):
+class SigV4Auth(BaseSigner):
     """
     Sign a request with Signature V4.
     """
+    REQUIRES_REGION = True
 
-    def __init__(self, credentials, service_name=None, region_name=None):
+    def __init__(self, credentials, service_name, region_name):
         self.credentials = credentials
-        if self.credentials is None:
-            raise NoCredentialsError
-        self.now = datetime.datetime.utcnow()
-        self.timestamp = self.now.strftime('%Y%m%dT%H%M%SZ')
-        self.region_name = region_name
-        self.service_name = service_name
+        # We initialize these value here so the unit tests can have
+        # valid values.  But these will get overriden in ``add_auth``
+        # later for real requests.
+        now = datetime.datetime.utcnow()
+        self.timestamp = now.strftime('%Y%m%dT%H%M%SZ')
+        self._region_name = region_name
+        self._service_name = service_name
 
     def _sign(self, key, msg, hex=False):
         if hex:
@@ -157,16 +161,43 @@ class SigV4Auth(object):
 
     def canonical_query_string(self, request):
         cqs = ''
+        # The query string can come from two parts.  One is the
+        # params attribute of the request.  The other is from the request
+        # url (in which case we have to re-split the url into its components
+        # and parse out the query string component).
         if request.params:
-            params = request.params
-            l = []
-            for param in params:
-                value = str(params[param])
-                l.append('%s=%s' % (quote(param, safe='-_.~'),
-                                    quote(value, safe='-_.~')))
-            l = sorted(l)
-            cqs = '&'.join(l)
+            return self._canonical_query_string_params(request.params)
+        else:
+            return self._canonical_query_string_url(urlsplit(request.url))
         return cqs
+
+    def _canonical_query_string_params(self, params):
+        l = []
+        for param in params:
+            value = str(params[param])
+            l.append('%s=%s' % (quote(param, safe='-_.~'),
+                                quote(value, safe='-_.~')))
+        l = sorted(l)
+        cqs = '&'.join(l)
+        return cqs
+
+    def _canonical_query_string_url(self, parts):
+        buf = ''
+        if parts.query:
+            qsa = parts.query.split('&')
+            qsa = [a.split('=', 1) for a in qsa]
+            quoted_qsa = []
+            for q in qsa:
+                if len(q) == 2:
+                    quoted_qsa.append(
+                        '%s=%s' % (quote(q[0], safe='-_.~'),
+                                   quote(unquote(q[1]), safe='-_.~')))
+                elif len(q) == 1:
+                    quoted_qsa.append('%s=' % quote(q[0], safe='-_.~'))
+            if len(quoted_qsa) > 0:
+                quoted_qsa.sort(key=itemgetter(0))
+                buf += '&'.join(quoted_qsa)
+        return buf
 
     def canonical_headers(self, headers_to_sign):
         """
@@ -176,11 +207,11 @@ class SigV4Auth(object):
         them into a string, separated by newlines.
         """
         headers = []
-        for key in set(headers_to_sign):
+        sorted_header_names = sorted(set(headers_to_sign))
+        for key in sorted_header_names:
             value = ','.join(v.strip() for v in
                              sorted(headers_to_sign.get_all(key)))
             headers.append('%s:%s' % (key, value))
-        headers.sort()
         return '\n'.join(headers)
 
     def signed_headers(self, headers_to_sign):
@@ -189,35 +220,52 @@ class SigV4Auth(object):
         return ';'.join(l)
 
     def payload(self, request):
-        if request.body:
+        if request.body and hasattr(request.body, 'seek'):
+            position = request.body.tell()
+            read_chunksize = functools.partial(request.body.read,
+                                               PAYLOAD_BUFFER)
+            checksum = sha256()
+            for chunk in iter(read_chunksize, b''):
+                checksum.update(chunk)
+            hex_checksum = checksum.hexdigest()
+            request.body.seek(position)
+            return hex_checksum
+        elif request.body:
             return sha256(request.body.encode('utf-8')).hexdigest()
         else:
             return EMPTY_SHA256_HASH
 
     def canonical_request(self, request):
         cr = [request.method.upper()]
-        path = normalize_url_path(urlsplit(request.url).path)
+        path = self._normalize_url_path(urlsplit(request.url).path)
         cr.append(path)
         cr.append(self.canonical_query_string(request))
         headers_to_sign = self.headers_to_sign(request)
         cr.append(self.canonical_headers(headers_to_sign) + '\n')
         cr.append(self.signed_headers(headers_to_sign))
-        cr.append(self.payload(request))
+        if 'X-Amz-Content-SHA256' in request.headers:
+            body_checksum = request.headers['X-Amz-Content-SHA256']
+        else:
+            body_checksum = self.payload(request)
+        cr.append(body_checksum)
         return '\n'.join(cr)
+
+    def _normalize_url_path(self, path):
+        return normalize_url_path(path)
 
     def scope(self, args):
         scope = [self.credentials.access_key]
         scope.append(self.timestamp[0:8])
-        scope.append(self.region_name)
-        scope.append(self.service_name)
+        scope.append(self._region_name)
+        scope.append(self._service_name)
         scope.append('aws4_request')
         return '/'.join(scope)
 
     def credential_scope(self, args):
         scope = []
         scope.append(self.timestamp[0:8])
-        scope.append(self.region_name)
-        scope.append(self.service_name)
+        scope.append(self._region_name)
+        scope.append(self._service_name)
         scope.append('aws4_request')
         return '/'.join(scope)
 
@@ -237,20 +285,20 @@ class SigV4Auth(object):
         key = self.credentials.secret_key
         k_date = self._sign(('AWS4' + key).encode('utf-8'),
                             self.timestamp[0:8])
-        k_region = self._sign(k_date, self.region_name)
-        k_service = self._sign(k_region, self.service_name)
+        k_region = self._sign(k_date, self._region_name)
+        k_service = self._sign(k_region, self._service_name)
         k_signing = self._sign(k_service, 'aws4_request')
         return self._sign(k_signing, string_to_sign, hex=True)
 
     def add_auth(self, request):
+        if self.credentials is None:
+            raise NoCredentialsError
+        # Create a new timestamp for each signing event
+        now = datetime.datetime.utcnow()
+        self.timestamp = now.strftime('%Y%m%dT%H%M%SZ')
         # This could be a retry.  Make sure the previous
         # authorization header is removed first.
-        if 'Authorization' in request.headers:
-            del request.headers['Authorization']
-        if 'Date' not in request.headers:
-            request.headers['X-Amz-Date'] = self.timestamp
-        if self.credentials.token:
-            request.headers['X-Amz-Security-Token'] = self.credentials.token
+        self._add_headers_before_signing(request)
         canonical_request = self.canonical_request(request)
         logger.debug("Calculating signature using v4 auth.")
         logger.debug('CanonicalRequest:\n%s', canonical_request)
@@ -266,8 +314,27 @@ class SigV4Auth(object):
         request.headers['Authorization'] = ', '.join(l)
         return request
 
+    def _add_headers_before_signing(self, request):
+        if 'Authorization' in request.headers:
+            del request.headers['Authorization']
+        if 'Date' not in request.headers:
+            request.headers['X-Amz-Date'] = self.timestamp
+        if self.credentials.token:
+            request.headers['X-Amz-Security-Token'] = self.credentials.token
 
-class HmacV1Auth(object):
+
+class S3SigV4Auth(SigV4Auth):
+
+    def _add_headers_before_signing(self, request):
+        super(S3SigV4Auth, self)._add_headers_before_signing(request)
+        request.headers['X-Amz-Content-SHA256'] = self.payload(request)
+
+    def _normalize_url_path(self, path):
+        # For S3, we do not normalize the path.
+        return path
+
+
+class HmacV1Auth(BaseSigner):
 
     # List of Query String Arguments of Interest
     QSAOfInterest = ['acl', 'cors', 'defaultObjectAcl', 'location', 'logging',
@@ -281,10 +348,6 @@ class HmacV1Auth(object):
 
     def __init__(self, credentials, service_name=None, region_name=None):
         self.credentials = credentials
-        if self.credentials is None:
-            raise NoCredentialsError
-        self.service_name = service_name
-        self.region_name = region_name
         self.auth_path = None  # see comment in canonical_resource below
 
     def sign_string(self, string_to_sign):
@@ -377,6 +440,8 @@ class HmacV1Auth(object):
         return self.sign_string(string_to_sign)
 
     def add_auth(self, request):
+        if self.credentials is None:
+            raise NoCredentialsError
         logger.debug("Calculating signature using hmacv1 auth.")
         split = urlsplit(request.url)
         logger.debug('HTTP request method: %s', request.method)
@@ -394,4 +459,5 @@ AUTH_TYPE_MAPS = {
     'v3': SigV3Auth,
     'v3https': SigV3Auth,
     's3': HmacV1Auth,
+    's3v4': S3SigV4Auth,
 }

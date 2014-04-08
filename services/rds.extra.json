@@ -10,7 +10,8 @@
         "us-west-2": null,
         "us-west-1": null,
         "eu-west-1": null,
-        "us-gov-west-1": null
+        "us-gov-west-1": null,
+        "cn-north-1": "https://rds.cn-north-1.amazonaws.com.cn"
       },
       "protocols": [
         "https"
@@ -19,88 +20,146 @@
   },
   "pagination": {
     "DescribeDBEngineVersions": {
-      "limit_key": "MaxRecords",
       "input_token": "Marker",
       "output_token": "Marker",
+      "limit_key": "MaxRecords",
       "result_key": "DBEngineVersions"
     },
     "DescribeDBInstances": {
-      "limit_key": "MaxRecords",
       "input_token": "Marker",
       "output_token": "Marker",
+      "limit_key": "MaxRecords",
       "result_key": "DBInstances"
     },
-    "DescribeDBParameterGroups": {
-      "limit_key": "MaxRecords",
+    "DescribeDBLogFiles": {
       "input_token": "Marker",
       "output_token": "Marker",
+      "limit_key": "MaxRecords",
+      "result_key": "DescribeDBLogFiles"
+    },
+    "DescribeDBParameterGroups": {
+      "input_token": "Marker",
+      "output_token": "Marker",
+      "limit_key": "MaxRecords",
       "result_key": "DBParameterGroups"
     },
     "DescribeDBParameters": {
-      "limit_key": "MaxRecords",
       "input_token": "Marker",
       "output_token": "Marker",
+      "limit_key": "MaxRecords",
       "result_key": "Parameters"
     },
     "DescribeDBSecurityGroups": {
-      "limit_key": "MaxRecords",
       "input_token": "Marker",
       "output_token": "Marker",
+      "limit_key": "MaxRecords",
       "result_key": "DBSecurityGroups"
     },
     "DescribeDBSnapshots": {
-      "limit_key": "MaxRecords",
       "input_token": "Marker",
       "output_token": "Marker",
+      "limit_key": "MaxRecords",
       "result_key": "DBSnapshots"
     },
     "DescribeDBSubnetGroups": {
-      "limit_key": "MaxRecords",
       "input_token": "Marker",
       "output_token": "Marker",
+      "limit_key": "MaxRecords",
       "result_key": "DBSubnetGroups"
     },
     "DescribeEngineDefaultParameters": {
+      "input_token": "Marker",
+      "output_token": "EngineDefaults.Marker",
       "limit_key": "MaxRecords",
+      "result_key": "EngineDefaults.Parameters"
+    },
+    "DescribeEventSubscriptions": {
       "input_token": "Marker",
       "output_token": "Marker",
-      "result_key": "EngineDefaults"
+      "limit_key": "MaxRecords",
+      "result_key": "EventSubscriptionsList"
     },
     "DescribeEvents": {
-      "limit_key": "MaxRecords",
       "input_token": "Marker",
       "output_token": "Marker",
+      "limit_key": "MaxRecords",
       "result_key": "Events"
     },
     "DescribeOptionGroupOptions": {
-      "limit_key": "MaxRecords",
       "input_token": "Marker",
       "output_token": "Marker",
+      "limit_key": "MaxRecords",
       "result_key": "OptionGroupOptions"
     },
     "DescribeOptionGroups": {
-      "limit_key": "MaxRecords",
       "input_token": "Marker",
       "output_token": "Marker",
+      "limit_key": "MaxRecords",
       "result_key": "OptionGroupsList"
     },
     "DescribeOrderableDBInstanceOptions": {
-      "limit_key": "MaxRecords",
       "input_token": "Marker",
       "output_token": "Marker",
+      "limit_key": "MaxRecords",
       "result_key": "OrderableDBInstanceOptions"
     },
     "DescribeReservedDBInstances": {
-      "limit_key": "MaxRecords",
       "input_token": "Marker",
       "output_token": "Marker",
+      "limit_key": "MaxRecords",
       "result_key": "ReservedDBInstances"
     },
     "DescribeReservedDBInstancesOfferings": {
-      "limit_key": "MaxRecords",
       "input_token": "Marker",
       "output_token": "Marker",
+      "limit_key": "MaxRecords",
       "result_key": "ReservedDBInstancesOfferings"
+    },
+    "DownloadDBLogFilePortion": {
+      "input_token": "Marker",
+      "output_token": "Marker",
+      "limit_key": "NumberOfLines",
+      "more_results": "AdditionalDataPending",
+      "result_key": "LogFileData"
+    }
+  },
+  "waiters": {
+    "__default__": {
+      "interval": 30,
+      "max_attempts": 60
+    },
+    "__DBInstanceState": {
+      "operation": "DescribeDBInstances",
+      "acceptor_path": "DBInstances[].DBInstanceStatus",
+      "acceptor_type": "output"
+    },
+    "DBInstanceAvailable": {
+      "extends": "__DBInstanceState",
+      "success_value": "available",
+      "failure_value": [
+        "deleted",
+        "deleting",
+        "failed",
+        "incompatible-restore",
+        "incompatible-parameters",
+        "incompatible-parameters",
+        "incompatible-restore"
+      ]
+    },
+    "DBInstanceDeleted": {
+      "extends": "__DBInstanceState",
+      "success_value": "deleted",
+      "failure_value": [
+        "creating",
+        "modifying",
+        "rebooting",
+        "resetting-master-credentials"
+      ]
+    }
+  },
+  "transformations": {
+    "remove-deprecated-params": {
+      "deprecated_keyword": "not currently supported"
     }
   }
 }

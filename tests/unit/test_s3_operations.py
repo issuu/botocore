@@ -1,28 +1,20 @@
 #!/usr/bin/env python
 # Copyright (c) 2012-2013 Mitch Garnaat http://garnaat.org/
-# Copyright 2012-2013 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# Copyright 2012-2014 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 #
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish, dis-
-# tribute, sublicense, and/or sell copies of the Software, and to permit
-# persons to whom the Software is furnished to do so, subject to the fol-
-# lowing conditions:
+# Licensed under the Apache License, Version 2.0 (the "License"). You
+# may not use this file except in compliance with the License. A copy of
+# the License is located at
 #
-# The above copyright notice and this permission notice shall be included
-# in all copies or substantial portions of the Software.
+# http://aws.amazon.com/apache2.0/
 #
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABIL-
-# ITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-# SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
-# WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-# IN THE SOFTWARE.
-#
+# or in the "license" file accompanying this file. This file is
+# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
+# ANY KIND, either express or implied. See the License for the specific
+# language governing permissions and limitations under the License.
+
 import os
-from tests import BaseEnvVar
+from tests import BaseSessionTest
 import botocore.session
 
 XMLBODY1 = ('<CreateBucketConfiguration><LocationConstraint>sa-east-1'
@@ -49,21 +41,35 @@ XMLBODY5 = ('<BucketLoggingStatus><LoggingEnabled><TargetBucket>mybucketlogs'
             '</EmailAddress></Grantee><Permission>READ</Permission></Grant>'
             '</TargetGrants><TargetPrefix>mybucket-access_log-/</TargetPrefix>'
             '</LoggingEnabled></BucketLoggingStatus>')
+XMLBODY6 = ('<VersioningConfiguration>'
+            '<Status>Enabled</Status>'
+            '<MfaDelete>Enabled</MfaDelete>'
+            '</VersioningConfiguration>')
+XMLBODY7 = ('<Delete><Object><Key>foobar</Key>'
+           '</Object><Object><Key>fiebaz</Key></Object>'
+            '</Delete>')
+XMLBODY8 = ('<WebsiteConfiguration>'
+            '<ErrorDocument><Key>SomeErrorDocument.html</Key></ErrorDocument>'
+            '<IndexDocument><Suffix>index.html</Suffix></IndexDocument>'
+            '</WebsiteConfiguration>')
+XMLBODY9 = ('<LifecycleConfiguration><Rule><ID>archive-objects-glacier-'
+            'immediately-upon-creation</ID><Prefix></Prefix>'
+            '<Status>Enabled</Status><Transition><Days>0</Days>'
+            '<StorageClass>GLACIER</StorageClass></Transition></Rule>'
+            '</LifecycleConfiguration>')
 
 POLICY = ('{"Version": "2008-10-17","Statement": [{"Sid": "AddPerm",'
           '"Effect": "Allow","Principal": {"AWS": "*"},'
           '"Action": "s3:GetObject", "Resource": "arn:aws:s3:::BUCKET_NAME/*"'
           '}]}')
 
-class TestS3Operations(BaseEnvVar):
+
+class TestS3Operations(BaseSessionTest):
 
     maxDiff = None
 
     def setUp(self):
         super(TestS3Operations, self).setUp()
-        self.environ['AWS_ACCESS_KEY_ID'] = 'foo'
-        self.environ['AWS_SECRET_ACCESS_KEY'] = 'bar'
-        self.session = botocore.session.get_session()
         self.s3 = self.session.get_service('s3')
         self.endpoint = self.s3.get_endpoint('us-east-1')
         self.bucket_name = 'foo'
@@ -103,6 +109,30 @@ class TestS3Operations(BaseEnvVar):
         headers = {'Content-MD5': '5bNG1b31rFf4z+aleBKqWw=='}
         self.assertEqual(params['uri_params'], uri_params)
         self.assertEqual(params['payload'].getvalue(), XMLBODY2)
+        self.assertEqual(params['headers'], headers)
+
+    def test_create_entire_bucket_lifecycle(self):
+        op = self.s3.get_operation('PutBucketLifecycle')
+        config = {'Rules': [
+                      {'ID': 'archive-objects-glacier-immediately-upon-creation',
+                       'Prefix': None,
+                       'Status': 'Enabled',
+                       'Transition': {'Days': 0,
+                                      'StorageClass': 'GLACIER'}
+                       }
+                    ]
+                  }
+        params = op.build_parameters(bucket=self.bucket_name,
+                                     lifecycle_configuration=config)
+        # There is a handler for the before-call event that will
+        # add the Content-MD5 header to the parameters if it is not
+        # already there.  We are going to fire the event here to
+        # simulate that and make sure the right header is added.
+        self.session.emit('before-call.s3.PutBucketLifecycle', params=params)
+        uri_params = {'Bucket': self.bucket_name}
+        headers = {'Content-MD5': 'RLlxIC2KsifRLSfsrCKkVg=='}
+        self.assertEqual(params['uri_params'], uri_params)
+        self.assertEqual(params['payload'].getvalue(), XMLBODY9)
         self.assertEqual(params['headers'], headers)
 
     def test_put_bucket_tagging(self):
@@ -156,6 +186,40 @@ class TestS3Operations(BaseEnvVar):
         self.assertEqual(params['payload'].getvalue(), XMLBODY4)
         self.assertEqual(params['headers'], headers)
 
+    def test_put_bucket_website(self):
+        op = self.s3.get_operation('PutBucketWebsite')
+        website = {"IndexDocument": {'Suffix': 'index.html'},
+                   "ErrorDocument": {'Key': 'SomeErrorDocument.html'}}
+        params = op.build_parameters(bucket=self.bucket_name,
+                                     website_configuration=website)
+        uri_params = {'Bucket': self.bucket_name}
+        self.assertEqual(params['uri_params'], uri_params)
+        self.assertEqual(params['payload'].getvalue(), XMLBODY8)
+
+    def test_delete_objects(self):
+        op = self.s3.get_operation('DeleteObjects')
+        delete = {"Objects": [
+                {
+                    "Key": "foobar"
+                    },
+                {
+                    "Key": "fiebaz"
+                    }
+                ]
+                  }
+        params = op.build_parameters(bucket=self.bucket_name,
+                                     delete=delete)
+        # There is a handler for the before-call event that will
+        # add the Content-MD5 header to the parameters if it is not
+        # already there.  We are going to fire the event here to
+        # simulate that and make sure the right header is added.
+        self.session.emit('before-call.s3.DeleteObjects', params=params)
+        uri_params = {'Bucket': self.bucket_name}
+        headers = {'Content-MD5': '1qryost37c7QBmno21C08w=='}
+        self.assertEqual(params['uri_params'], uri_params)
+        self.assertEqual(params['payload'].getvalue(), XMLBODY7)
+        self.assertEqual(params['headers'], headers)
+
     def test_put_bucket_policy(self):
         op = self.s3.get_operation('PutBucketPolicy')
         params = op.build_parameters(bucket=self.bucket_name,
@@ -181,6 +245,18 @@ class TestS3Operations(BaseEnvVar):
         self.assertEqual(params['uri_params'], uri_params)
         self.assertEqual(params['payload'].getvalue(), XMLBODY5)
         self.assertEqual(params['headers'], {})
+
+    def test_put_bucket_versioning_mfa(self):
+        op = self.s3.get_operation('PutBucketVersioning')
+        mfa = {'MfaDelete': 'Enabled',
+               'Status': 'Enabled'}
+        params = op.build_parameters(bucket=self.bucket_name,
+                                     versioning_configuration=mfa,
+                                     mfa="GAK000000000 123456")
+        uri_params = {'Bucket': self.bucket_name}
+        self.assertEqual(params['uri_params'], uri_params)
+        self.assertEqual(params['payload'].getvalue(), XMLBODY6)
+        self.assertEqual(params['headers'], {'x-amz-mfa': 'GAK000000000 123456'})
 
     def test_put_object(self):
         op = self.s3.get_operation('PutObject')
@@ -222,7 +298,3 @@ class TestS3Operations(BaseEnvVar):
         # Explicitly check that <Parts> is not in the payload anywhere.
         self.assertNotIn('<Parts>', xml_payload)
         self.assertNotIn('</Parts>', xml_payload)
-
-
-if __name__ == "__main__":
-    unittest.main()

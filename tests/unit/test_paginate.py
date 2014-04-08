@@ -1,24 +1,15 @@
-# Copyright (c) 2013 Amazon.com, Inc. or its affiliates.  All Rights Reserved
+# Copyright 2012-2014 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 #
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish, dis-
-# tribute, sublicense, and/or sell copies of the Software, and to permit
-# persons to whom the Software is furnished to do so, subject to the fol-
-# lowing conditions:
+# Licensed under the Apache License, Version 2.0 (the "License"). You
+# may not use this file except in compliance with the License. A copy of
+# the License is located at
 #
-# The above copyright notice and this permission notice shall be included
-# in all copies or substantial portions of the Software.
+# http://aws.amazon.com/apache2.0/
 #
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABIL-
-# ITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-# SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
-# WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-# IN THE SOFTWARE.
-#
+# or in the "license" file accompanying this file. This file is
+# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
+# ANY KIND, either express or implied. See the License for the specific
+# language governing permissions and limitations under the License.
 
 from tests import unittest
 from botocore.paginate import Paginator
@@ -38,6 +29,12 @@ class TestPagination(unittest.TestCase):
         }
         self.operation.pagination = self.paginate_config
         self.paginator = Paginator(self.operation)
+
+    def test_result_key_available(self):
+        self.assertEqual(
+            [rk.expression for rk in self.paginator.result_keys],
+            ['Foo']
+        )
 
     def test_no_next_token(self):
         response = {'not_the_next_token': 'foobar'}
@@ -81,7 +78,7 @@ class TestPagination(unittest.TestCase):
 
     def test_next_token_with_or_expression(self):
         self.operation.pagination = {
-            'output_token': 'NextToken or NextToken2',
+            'output_token': 'NextToken || NextToken2',
             'py_input_token': 'NextToken',
             'result_key': 'Foo',
         }
@@ -110,7 +107,7 @@ class TestPagination(unittest.TestCase):
         # Some pagination configs have a 'more_token' key that
         # indicate whether or not the results are being paginated.
         self.paginate_config = {
-            'more_key': 'IsTruncated',
+            'more_results': 'IsTruncated',
             'output_token': 'NextToken',
             'py_input_token': 'NextToken',
             'result_key': 'Foo',
@@ -133,7 +130,7 @@ class TestPagination(unittest.TestCase):
 
     def test_more_tokens_is_path_expression(self):
         self.paginate_config = {
-            'more_key': 'Foo.IsTruncated',
+            'more_results': 'Foo.IsTruncated',
             'output_token': 'NextToken',
             'py_input_token': 'NextToken',
             'result_key': 'Bar',
@@ -181,7 +178,7 @@ class TestPaginatorWithPathExpressions(unittest.TestCase):
         # This is something we'd see in s3 pagination.
         self.paginate_config = {
             'output_token': [
-                'NextMarker or ListBucketResult.Contents[-1].Key'],
+                'NextMarker || ListBucketResult.Contents[-1].Key'],
             'py_input_token': 'next_marker',
             'result_key': 'Contents',
         }
@@ -296,6 +293,21 @@ class TestKeyIterators(unittest.TestCase):
         self.operation.call.side_effect = responses
         self.assertEqual(
             paginator.paginate(None, max_items=1).build_full_result(),
+            {'Users': ['User1'], 'NextToken': 'm1'})
+
+    def test_max_items_as_strings(self):
+        # Some services (route53) model MaxItems as a string type.
+        # We need to be able to handle this case.
+        paginator = Paginator(self.operation)
+        responses = [
+            (None, {"Users": ["User1"], "Marker": "m1"}),
+            (None, {"Users": ["User2"], "Marker": "m2"}),
+            (None, {"Users": ["User3"]}),
+        ]
+        self.operation.call.side_effect = responses
+        self.assertEqual(
+            # Note max_items is a string here.
+            paginator.paginate(None, max_items='1').build_full_result(),
             {'Users': ['User1'], 'NextToken': 'm1'})
 
     def test_next_token_on_page_boundary(self):
@@ -510,6 +522,60 @@ class TestMultipleInputKeys(unittest.TestCase):
         self.assertEqual(
             self.operation.call.call_args_list,
             [mock.call(None, InMarker1='m1', InMarker2='m2'),])
+
+    def test_result_key_exposed_on_paginator(self):
+        self.assertEqual(
+            [rk.expression for rk in self.paginator.result_keys],
+            ['Users', 'Groups']
+        )
+
+    def test_result_key_exposed_on_page_iterator(self):
+        pages = self.paginator.paginate(None, max_items=3)
+        self.assertEqual(
+            [rk.expression for rk in pages.result_keys],
+            ['Users', 'Groups']
+        )
+
+
+class TestExpressionKeyIterators(unittest.TestCase):
+    def setUp(self):
+        self.operation = mock.Mock()
+        # This is something like what we'd see in RDS.
+        self.paginate_config = {
+            "py_input_token": "Marker",
+            "output_token": "Marker",
+            "limit_key": "MaxRecords",
+            "result_key": "EngineDefaults.Parameters"
+        }
+        self.operation.pagination = self.paginate_config
+        self.paginator = Paginator(self.operation)
+        self.responses = [
+            (None, {
+                "EngineDefaults": {"Parameters": ["One", "Two"]
+            }, "Marker": "m1"}),
+            (None, {
+                "EngineDefaults": {"Parameters": ["Three", "Four"]
+            }, "Marker": "m2"}),
+            (None, {"EngineDefaults": {"Parameters": ["Five"]}}),
+        ]
+
+    def test_result_key_iters(self):
+        self.operation.call.side_effect = self.responses
+        pages = self.paginator.paginate(None)
+        iterators = pages.result_key_iters()
+        self.assertEqual(len(iterators), 1)
+        self.assertEqual(list(iterators[0]),
+                         ['One', 'Two', 'Three', 'Four', 'Five'])
+
+    def test_build_full_result_with_single_key(self):
+        self.operation.call.side_effect = self.responses
+        pages = self.paginator.paginate(None)
+        complete = pages.build_full_result()
+        self.assertEqual(complete, {
+            'EngineDefaults': {
+                'Parameters': ['One', 'Two', 'Three', 'Four', 'Five']
+            },
+        })
 
 
 if __name__ == '__main__':

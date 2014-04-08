@@ -1,31 +1,24 @@
 # Copyright (c) 2012-2013 Mitch Garnaat http://garnaat.org/
-# Copyright 2012-2013 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# Copyright 2012-2014 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 #
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish, dis-
-# tribute, sublicense, and/or sell copies of the Software, and to permit
-# persons to whom the Software is furnished to do so, subject to the fol-
-# lowing conditions:
+# Licensed under the Apache License, Version 2.0 (the "License"). You
+# may not use this file except in compliance with the License. A copy of
+# the License is located at
 #
-# The above copyright notice and this permission notice shall be included
-# in all copies or substantial portions of the Software.
+# http://aws.amazon.com/apache2.0/
 #
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABIL-
-# ITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-# SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
-# WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-# IN THE SOFTWARE.
-#
+# or in the "license" file accompanying this file. This file is
+# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
+# ANY KIND, either express or implied. See the License for the specific
+# language governing permissions and limitations under the License.
 
+import os
 import logging
 import time
+import threading
 
-from requests.sessions import Session
-from requests.utils import get_environ_proxies
+from botocore.vendored.requests.sessions import Session
+from botocore.vendored.requests.utils import get_environ_proxies
 import six
 
 import botocore.response
@@ -50,17 +43,19 @@ class Endpoint(object):
     :ivar session: The session object.
     """
 
-    def __init__(self, service, region_name, host, auth, proxies=None):
+    def __init__(self, service, region_name, host, auth, proxies=None,
+                 verify=True):
         self.service = service
         self.session = self.service.session
         self.region_name = region_name
         self.host = host
-        self.verify = True
+        self.verify = verify
         self.auth = auth
         if proxies is None:
             proxies = {}
         self.proxies = proxies
         self.http_session = Session()
+        self._lock = threading.Lock()
 
     def __repr__(self):
         return '%s(%s)' % (self.service.endpoint_prefix, self.host)
@@ -68,20 +63,32 @@ class Endpoint(object):
     def make_request(self, operation, params):
         logger.debug("Making request for %s (verify_ssl=%s) with params: %s",
                      operation, self.verify, params)
+        # To decide if we need to do auth or not we check the
+        # signature_version attribute on both the service and
+        # the operation are not None and we make sure there is an
+        # auth class associated with the endpoint.
+        # If any of these are not true, we skip auth.
+        do_auth = (getattr(self.service, 'signature_version', None) and
+                   getattr(operation, 'signature_version', True) and
+                   self.auth)
         request = self._create_request_object(operation, params)
-        prepared_request = self.prepare_request(request)
+        prepared_request = self.prepare_request(request, do_auth)
         return self._send_request(prepared_request, operation)
 
     def _create_request_object(self, operation, params):
         raise NotImplementedError('_create_request_object')
 
-    def prepare_request(self, request):
-        if self.auth is not None:
-            event = self.session.create_event('before-auth',
-                                              self.service.endpoint_prefix)
-            self.session.emit(event, endpoint=self,
-                              request=request, auth=self.auth)
-            self.auth.add_auth(request=request)
+    def prepare_request(self, request, do_auth=True):
+        if do_auth:
+            with self._lock:
+                # Parts of the auth signing code aren't thread safe (things
+                # that manipulate .auth_path), so we're using a lock here to
+                # prevent race conditions.
+                event = self.session.create_event(
+                    'before-auth', self.service.endpoint_prefix)
+                self.session.emit(event, endpoint=self,
+                                request=request, auth=self.auth)
+                self.auth.add_auth(request=request)
         prepared_request = request.prepare()
         return prepared_request
 
@@ -90,6 +97,11 @@ class Endpoint(object):
         response, exception = self._get_response(request, operation, attempts)
         while self._needs_retry(attempts, operation, response, exception):
             attempts += 1
+            # If there is a stream associated with the request, we need
+            # to reset it before attempting to send the request again.
+            # This will ensure that we resend the entire contents of the
+            # body.
+            request.reset_stream()
             response, exception = self._get_response(request, operation,
                                                      attempts)
         return response
@@ -231,7 +243,7 @@ def _get_proxies(url):
     return get_environ_proxies(url)
 
 
-def get_endpoint(service, region_name, endpoint_url):
+def get_endpoint(service, region_name, endpoint_url, verify=None):
     cls = SERVICE_TO_ENDPOINT.get(service.type)
     if cls is None:
         raise botocore.exceptions.UnknownServiceStyle(
@@ -242,19 +254,42 @@ def get_endpoint(service, region_name, endpoint_url):
         auth = _get_auth(service.signature_version,
                          credentials=service.session.get_credentials(),
                          service_name=service_name,
-                         region_name=region_name)
+                         region_name=region_name,
+                         service_object=service)
     proxies = _get_proxies(endpoint_url)
-    return cls(service, region_name, endpoint_url, auth=auth, proxies=proxies)
+    verify = _get_verify_value(verify)
+    return cls(service, region_name, endpoint_url, auth=auth, proxies=proxies,
+               verify=verify)
 
 
-def _get_auth(signature_version, credentials, service_name, region_name):
+def _get_verify_value(verify):
+    # This is to account for:
+    # https://github.com/kennethreitz/requests/issues/1436
+    # where we need to honor REQUESTS_CA_BUNDLE because we're creating our
+    # own request objects.
+    # First, if verify is not None, then the user explicitly specified
+    # a value so this automatically wins.
+    if verify is not None:
+        return verify
+    # Otherwise use the value from REQUESTS_CA_BUNDLE, or default to
+    # True if the env var does not exist.
+    return os.environ.get('REQUESTS_CA_BUNDLE', True)
+
+
+def _get_auth(signature_version, credentials, service_name, region_name,
+              service_object):
     cls = AUTH_TYPE_MAPS.get(signature_version)
     if cls is None:
         raise UnknownSignatureVersionError(signature_version=signature_version)
     else:
-        return cls(credentials=credentials,
-                   service_name=service_name,
-                   region_name=region_name)
+        kwargs = {'credentials': credentials}
+        if cls.REQUIRES_REGION:
+            if region_name is None:
+                envvar_name = service_object.session.session_var_map['region'][1]
+                raise botocore.exceptions.NoRegionError(env_var=envvar_name)
+            kwargs['region_name'] = region_name
+            kwargs['service_name'] = service_name
+        return cls(**kwargs)
 
 
 SERVICE_TO_ENDPOINT = {

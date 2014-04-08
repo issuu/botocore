@@ -10,11 +10,40 @@
         "ap-southeast-2": "http://ap-southeast-2.elasticmapreduce.amazonaws.com/",
         "us-west-2": "http://us-west-2.elasticmapreduce.amazonaws.com/",
         "us-west-1": "http://us-west-1.elasticmapreduce.amazonaws.com/",
-        "eu-west-1": "http://eu-west-1.elasticmapreduce.amazonaws.com/"
+        "eu-west-1": "http://eu-west-1.elasticmapreduce.amazonaws.com/",
+        "us-gov-west-1": null,
+        "cn-north-1": "https://elasticmapreduce.cn-north-1.amazonaws.com.cn"
       },
       "protocols": [
         "https"
       ]
+    }
+  },
+  "pagination": {
+    "ListBootstrapActions": {
+      "input_token": "Marker",
+      "output_token": "Marker",
+      "result_key": "BootstrapActions"
+    },
+    "ListClusters": {
+      "input_token": "Marker",
+      "output_token": "Marker",
+      "result_key": "Clusters"
+    },
+    "ListInstanceGroups": {
+      "input_token": "Marker",
+      "output_token": "Marker",
+      "result_key": "InstanceGroups"
+    },
+    "ListInstances": {
+      "input_token": "Marker",
+      "output_token": "Marker",
+      "result_key": "Instances"
+    },
+    "ListSteps": {
+      "input_token": "Marker",
+      "output_token": "Marker",
+      "result_key": "Steps"
     }
   }
 }

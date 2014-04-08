@@ -1,26 +1,19 @@
-# Copyright (c) 2013 Amazon.com, Inc. or its affiliates.  All Rights Reserved
+# Copyright 2012-2014 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 #
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish, dis-
-# tribute, sublicense, and/or sell copies of the Software, and to permit
-# persons to whom the Software is furnished to do so, subject to the fol-
-# lowing conditions:
+# Licensed under the Apache License, Version 2.0 (the "License"). You
+# may not use this file except in compliance with the License. A copy of
+# the License is located at
 #
-# The above copyright notice and this permission notice shall be included
-# in all copies or substantial portions of the Software.
+# http://aws.amazon.com/apache2.0/
 #
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABIL-
-# ITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-# SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
-# WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-# IN THE SOFTWARE.
-#
+# or in the "license" file accompanying this file. This file is
+# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
+# ANY KIND, either express or implied. See the License for the specific
+# language governing permissions and limitations under the License.
+
 from tests import unittest
-from botocore.translate import ModelFiles, translate, merge_dicts
+from botocore.translate import ModelFiles, translate, merge_dicts, \
+                               resembles_jmespath_exp
 
 
 SERVICES = {
@@ -81,7 +74,7 @@ SERVICES = {
             "pattern": "[\\w+=,.@:-]*",
             "documentation": "docs"
           },
-          # Not in the actual description, but this is to test iterators.
+          # Not in the actual description, but this is to test pagination.
           "NextToken": {
               "shape_name": "String",
               "type": "string",
@@ -210,6 +203,23 @@ SERVICES = {
     "RealOperation2013_02_04": {
       "name": "RealOperation2013_02_04",
       "input": {},
+      "output": {
+        "shape_name": "RealOperation2013_02_04Response",
+        "type": "structure",
+        "members": {
+          "Result": {
+            "shape_name": "Result",
+            "type": "string",
+            "documentation": ""
+          }
+        }
+      },
+      "errors": [],
+      "documentation": "docs"
+    },
+    "NoOutputOperation": {
+      "name": "NoOutputOperation",
+      "input": {},
       "output": {},
       "errors": [],
       "documentation": "docs"
@@ -251,7 +261,26 @@ SERVICES = {
         }
       },
       "documentation": "This operation has been deprecated."
-    }
+    },
+    "RenameOperation": {
+      "input": {
+        "shape_name": "RenameOperation",
+        "type": "structure",
+        "members": {
+          "RenameMe": {
+            "shape_name": "RenameMe",
+            "type": "string",
+            "documentation": "blah blah blah blah",
+          },
+          "FieBaz": {
+            "shape_name": "fiebazType",
+            "type": "string",
+            "documentation": ""
+          }
+        }
+      },
+      "documentation": "This operation has been deprecated."
+    },
   }
 }
 
@@ -560,8 +589,60 @@ class TestTranslateModel(unittest.TestCase):
         with self.assertRaises(ValueError):
             translate(self.model)
 
+    def test_cant_add_pagination_to_nonexistent_operation(self):
+        extra = {
+            'pagination': {
+                'ThisOperationDoesNotExist': {
+                    'input_token': 'NextToken',
+                    'output_token': ['NextToken', 'NextTokenToken'],
+                    'result_key': ['Credentials', 'AssumedRoleUser'],
+                    'limit_key': 'Foo',
+                }
+            }
+        }
+        self.model.enhancements = extra
+        with self.assertRaisesRegexp(
+                ValueError, "Trying to add pagination config for non "
+                            "existent operation: ThisOperationDoesNotExist"):
+            translate(self.model)
 
-class TestDictMerg(unittest.TestCase):
+    def test_skip_jmespath_validation(self):
+        # This would fail previously.
+        extra = {
+            'pagination': {
+                'AssumeRole': {
+                    'input_token': ['NextToken'],
+                    'output_token': ['NextToken', 'NextTokenToken'],
+                    'result_key': 'Credentials.AssumedRoleUser',
+                }
+            }
+        }
+        self.model.enhancements = extra
+        new_model = translate(self.model)
+        self.assertEqual(new_model['pagination'], extra['pagination'])
+
+    def test_result_key_validation_with_no_output(self):
+        extra = {
+            'pagination': {
+                # RealOperation does not have any output members so
+                # we should get an error message telling us this.
+                'NoOutputOperation': {
+                    'input_token': 'NextToken',
+                    'output_token': ['NextToken', 'NextTokenToken'],
+                    'result_key': ['Credentials', 'AssumedRoleUser'],
+                    'limit_key': 'Foo',
+                }
+            }
+        }
+        self.model.enhancements = extra
+        with self.assertRaisesRegexp(
+                ValueError, "Trying to add pagination config for an "
+                            "operation with no output members: "
+                            "NoOutputOperation"):
+            translate(self.model)
+
+
+class TestDictMerge(unittest.TestCase):
     def test_merge_dicts_overrides(self):
         first = {'foo': {'bar': {'baz': {'one': 'ORIGINAL', 'two': 'ORIGINAL'}}}}
         second = {'foo': {'bar': {'baz': {'one': 'UPDATE'}}}}
@@ -686,14 +767,37 @@ class TestReplacePartOfOperation(unittest.TestCase):
         # matched regex.
         self.assertEqual(list(sorted(new_model['operations'].keys())),
                          ['AssumeRole', 'DeprecatedOperation',
-                          'DeprecatedOperation2', 'RealOperation'])
+                          'DeprecatedOperation2', 'NoOutputOperation',
+                          'RealOperation', 'RenameOperation'])
         # But the name key attribute is left unchanged.
         self.assertEqual(new_model['operations']['RealOperation']['name'],
                          'RealOperation2013_02_04')
 
+    def test_merging_occurs_after_transformation(self):
+        enhancements = {
+            'transformations': {
+                'operation-name': {'remove': r'\d{4}_\d{2}_\d{2}'}
+            },
+            'operations': {
+                'RealOperation': {
+                    'input': {
+                        'checksum': 'md5',
+                    }
+                },
+            }
+        }
+        model = ModelFiles(SERVICES, regions={}, retry={},
+                           enhancements=enhancements)
+        model.enhancements = enhancements
+        new_model = translate(model)
+        self.assertIn('RealOperation', new_model['operations'])
+        self.assertEqual(
+            new_model['operations']['RealOperation']['input']['checksum'],
+            'md5')
+
 
 class TestRemovalOfDeprecatedParams(unittest.TestCase):
-    
+
     def test_remove_deprecated_params(self):
         enhancements = {
             'transformations': {
@@ -709,7 +813,7 @@ class TestRemovalOfDeprecatedParams(unittest.TestCase):
         self.assertNotIn('FieBaz', operation['input']['members'])
 
 class TestRemovalOfDeprecatedOps(unittest.TestCase):
-    
+
     def test_remove_deprecated_ops(self):
         enhancements = {
             'transformations': {
@@ -723,9 +827,9 @@ class TestRemovalOfDeprecatedOps(unittest.TestCase):
         # The deprecated operation should be gone
         self.assertNotIn('DeprecatedOperation2', new_model['operations'])
 
-        
+
 class TestFilteringOfDocumentation(unittest.TestCase):
-    
+
     def test_remove_deprecated_params(self):
         enhancements = {
             "transformations": {
@@ -745,6 +849,230 @@ class TestFilteringOfDocumentation(unittest.TestCase):
         self.assertEqual(operation['documentation'], 'This is my  stuff')
         param = operation['input']['members']['FooBar']
         self.assertEqual(param['documentation'], 'blah blah blah blah')
+
+
+class TestRenameParams(unittest.TestCase):
+    def test_rename_param(self):
+        enhancements = {
+            'transformations': {
+                'renames': {
+                    'RenameOperation.input.members.RenameMe': 'BeenRenamed',
+                }
+            }
+        }
+        model = ModelFiles(SERVICES, regions={}, retry={},
+                           enhancements=enhancements)
+        new_model = translate(model)
+        arguments = new_model['operations']['RenameOperation']['input']['members']
+        self.assertNotIn('RenameMe', arguments)
+        self.assertIn('BeenRenamed', arguments)
+
+
+class TestWaiterDenormalization(unittest.TestCase):
+    maxDiff = None
+
+    def setUp(self):
+        self.model = ModelFiles(SERVICES, {}, {}, {})
+
+    def test_waiter_default_resolved(self):
+        extra = {
+            'waiters': {
+                '__default__': {
+                    'interval': 20,
+                    'operation': 'AssumeRole',
+                    'max_attempts': 25,
+                    'acceptor_type': 'output',
+                    'acceptor_path': 'path',
+                    'acceptor_value': 'value',
+                },
+                # Note that this config doesn't make any actual sense,
+                # this is just testing we denormalize fields properly.
+                'RoleExists': {
+                    'operation': 'AssumeRole',
+                    'ignore_errors': ['Error1'],
+                    'success_type': 'output',
+                    'success_path': 'Table.TableStatus',
+                    'success_value': ['ACTIVE'],
+                }
+            }
+        }
+        self.model.enhancements = extra
+        new_model = translate(self.model)
+        denormalized = {
+            'RoleExists': {
+                'interval': 20,
+                'max_attempts': 25,
+                'operation': 'AssumeRole',
+                'ignore_errors': ['Error1'],
+                'success': {
+                    'type': 'output',
+                    'path': 'Table.TableStatus',
+                    'value': ['ACTIVE'],
+                },
+                'failure': {
+                    'type': 'output',
+                    'path': 'path',
+                    'value': ['value'],
+                }
+            }
+        }
+        self.assertEqual(new_model['waiters'], denormalized)
+
+    def test_default_and_extends(self):
+        extra = {
+            'waiters': {
+                '__default__': {
+                    'interval': 20,
+                    'max_attempts': 25,
+                },
+                '__RoleResource': {
+                    'operation': 'AssumeRole',
+                    'max_attempts': 50,
+                },
+                'RoleExists': {
+                    'extends': '__RoleResource',
+                    'ignore_errors': ['Error1'],
+                    'success_type': 'output',
+                    'success_path': 'Table.TableStatus',
+                    'success_value': 'ACTIVE',
+                    'failure_type': 'output',
+                    'failure_path': 'Table.TableStatus',
+                    'failure_value': 'ACTIVE',
+                }
+            }
+        }
+        self.model.enhancements = extra
+        new_model = translate(self.model)
+        denormalized = {
+            'RoleExists': {
+                # From __default__
+                'interval': 20,
+                # Overriden from __RoleResource
+                'max_attempts': 50,
+                # Defined in __RoleResource
+                'operation': 'AssumeRole',
+                # Defined in RoleExists
+                'ignore_errors': ['Error1'],
+                'success': {
+                    'type': 'output',
+                    'path': 'Table.TableStatus',
+                    'value': ['ACTIVE'],
+                },
+                'failure': {
+                    'type': 'output',
+                    'path': 'Table.TableStatus',
+                    'value': ['ACTIVE'],
+                }
+            }
+        }
+        self.assertEqual(new_model['waiters'], denormalized)
+
+    def test_acceptor_path_resolution(self):
+        extra = {
+            'waiters': {
+                'RoleExists': {
+                    'operation': 'AssumeRole',
+                    'acceptor_type': 'output',
+                    'acceptor_path': 'acceptor_path',
+                    'success_value': 'success_value',
+                    'failure_value': 'failure_value',
+                }
+            }
+        }
+        self.model.enhancements = extra
+        new_model = translate(self.model)
+        denormalized = {
+            'RoleExists': {
+                'operation': 'AssumeRole',
+                # We should only have success/failure values,
+                # no acceptor types, those are all resolved.
+                'success': {
+                    # From acceptor_type.
+                    'type': 'output',
+                    # From acceptor_path.
+                    'path': 'acceptor_path',
+                    # From success_value.
+                    'value': ['success_value'],
+                },
+                'failure': {
+                    # From acceptor_type.
+                    'type': 'output',
+                    # From acceptor_path.
+                    'path': 'acceptor_path',
+                    # From failure_value.
+                    'value': ['failure_value'],
+                }
+            }
+        }
+        self.assertEqual(new_model['waiters'], denormalized)
+
+    def test_only_acceptors_provided(self):
+        extra = {
+            'waiters': {
+                'RoleExists': {
+                    'operation': 'AssumeRole',
+                    'acceptor_type': 'output',
+                    'acceptor_path': 'acceptor_path',
+                    'acceptor_value': 'acceptor_value',
+                }
+            }
+        }
+        self.model.enhancements = extra
+        new_model = translate(self.model)
+        denormalized = {
+            'RoleExists': {
+                'operation': 'AssumeRole',
+                'success': {
+                    'type': 'output',
+                    'path': 'acceptor_path',
+                    'value': ['acceptor_value'],
+                },
+                'failure': {
+                    'type': 'output',
+                    'path': 'acceptor_path',
+                    'value': ['acceptor_value'],
+                }
+            }
+        }
+        self.assertEqual(new_model['waiters'], denormalized)
+
+    def test_validate_valid_operation(self):
+        extra = {
+            'waiters': {
+                '__default__': {
+                    'interval': 20,
+                    'max_attempts': 25,
+                },
+                '__RoleResource': {
+                    'operation': 'THISOPERATIONDOESNOTEXIST',
+                    'max_attempts': 50,
+                },
+                'RoleExists': {
+                    'extends': '__RoleResource',
+                    'ignore_errors': ['Error1'],
+                    'success_type': 'output',
+                    'success_path': 'Table.TableStatus',
+                    'success_value': 'ACTIVE',
+                    'failure_type': 'output',
+                    'failure_path': 'Table.TableStatus',
+                    'failure_value': 'ACTIVE',
+                }
+            }
+        }
+        self.model.enhancements = extra
+        with self.assertRaises(ValueError):
+            new_model = translate(self.model)
+
+
+class TestResemblesJMESPath(unittest.TestCase):
+    maxDiff = None
+
+    def test_is_jmespath(self):
+      self.assertTrue(resembles_jmespath_exp('Something.Else'))
+
+    def test_is_not_jmespath(self):
+      self.assertFalse(resembles_jmespath_exp('Something'))
+      self.assertFalse(resembles_jmespath_exp('Something[1]'))
 
 
 if __name__ == '__main__':

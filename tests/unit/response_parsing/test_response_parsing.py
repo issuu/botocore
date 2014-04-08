@@ -1,16 +1,30 @@
+# Copyright 2012-2014 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License"). You
+# may not use this file except in compliance with the License. A copy of
+# the License is located at
+#
+# http://aws.amazon.com/apache2.0/
+#
+# or in the "license" file accompanying this file. This file is
+# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
+# ANY KIND, either express or implied. See the License for the specific
+# language governing permissions and limitations under the License.
+
 import os
 import glob
 import json
 import pprint
 import logging
 import difflib
-import unittest
+from tests import unittest, create_session
 
 from mock import Mock
-
+from botocore.vendored.requests.structures import CaseInsensitiveDict
 
 import botocore.session
 from botocore.response import XmlResponse, JSONResponse, get_response
+from botocore.exceptions import IncompleteReadError
 
 log = logging.getLogger(__name__)
 
@@ -52,7 +66,7 @@ def test_xml_parsing():
     for dp in ['responses', 'errors']:
         data_path = os.path.join(os.path.dirname(__file__), 'xml')
         data_path = os.path.join(data_path, dp)
-        session = botocore.session.get_session()
+        session = create_session()
         xml_files = glob.glob('%s/*.xml' % data_path)
         service_names = set()
         for fn in xml_files:
@@ -101,9 +115,21 @@ def test_json_parsing():
             sn, opname = basename.split('-', 1)
             operation = service.get_operation(opname)
             r = JSONResponse(session, operation)
-            with open(inputfile, 'rb') as fp:
+            headers = {}
+            with open(inputfile, 'r') as fp:
                 jsondoc = fp.read()
-            r.parse(jsondoc, 'utf-8')
+                # Try to get any headers using a special key
+                try:
+                    parsed = json.loads(jsondoc)
+                except ValueError:
+                    # This will error later, let it go on
+                    parsed = {}
+                if '__headers' in parsed:
+                    headers = parsed['__headers']
+                    del parsed['__headers']
+                    jsondoc = json.dumps(parsed)
+            r.parse(jsondoc.encode('utf-8'), 'utf-8')
+            r.merge_header_values(headers)
             save_jsonfile(outputfile, r)
             fp = open(outputfile)
             data = json.load(fp)
@@ -118,17 +144,18 @@ class TestHeaderParsing(unittest.TestCase):
     def setUp(self):
         self.session = botocore.session.get_session()
         self.s3 = self.session.get_service('s3')
-    
+
     def test_put_object(self):
         http_response = Mock()
         http_response.encoding = 'utf-8'
-        http_response.headers = {'Date': 'Thu, 22 Aug 2013 02:11:57 GMT',
-                                 'Content-Length': '0',
-                                 'x-amz-request-id': '2B74ECB010FF029E',
-                                 'ETag': '"b081e66e7e0c314285c655cafb4d1e71"',
-                                 'x-amz-id-2': 'bKECRRBFttBRVbJPIVBLQwwipI0i+s9HMvNFdttR17ouR0pvQSKEJUR+1c6cW1nQ',
-                                 'Server': 'AmazonS3',
-                                 'content-type': 'text/xml'}
+        http_response.headers = CaseInsensitiveDict(
+            {'Date': 'Thu, 22 Aug 2013 02:11:57 GMT',
+             'Content-Length': '0',
+             'x-amz-request-id': '2B74ECB010FF029E',
+             'ETag': '"b081e66e7e0c314285c655cafb4d1e71"',
+             'x-amz-id-2': 'bKECRRBFttBRVbJPIVBLQwwipI0i+s9HMvNFdttR17ouR0pvQSKEJUR+1c6cW1nQ',
+             'Server': 'AmazonS3',
+             'content-type': 'text/xml'})
         http_response.content = ''
         put_object = self.s3.get_operation('PutObject')
         expected = {"ETag": '"b081e66e7e0c314285c655cafb4d1e71"'}
@@ -138,25 +165,87 @@ class TestHeaderParsing(unittest.TestCase):
     def test_head_object(self):
         http_response = Mock()
         http_response.encoding = 'utf-8'
-        http_response.headers = {'Date': 'Thu, 22 Aug 2013 02:11:57 GMT',
-                                 'Content-Length': '265',
-                                 'x-amz-request-id': '2B74ECB010FF029E',
-                                 'ETag': '"40d06eb6194712ac1c915783004ef730"',
-                                 'Server': 'AmazonS3',
-                                 'content-type': 'binary/octet-stream',
-                                 'Content-Type': 'binary/octet-stream',
-                                 'accept-ranges': 'bytes',
-                                 'Last-Modified': 'Tue, 20 Aug 2013 18:33:25 GMT',
-                                 'x-amz-server-side-encryption': 'AES256'
-                                 }
+        http_response.headers = CaseInsensitiveDict(
+            {'Date': 'Thu, 22 Aug 2013 02:11:57 GMT',
+             'Content-Length': '265',
+             'x-amz-request-id': '2B74ECB010FF029E',
+             'ETag': '"40d06eb6194712ac1c915783004ef730"',
+             'Server': 'AmazonS3',
+             'content-type': 'binary/octet-stream',
+             'Content-Type': 'binary/octet-stream',
+             'accept-ranges': 'bytes',
+             'Last-Modified': 'Tue, 20 Aug 2013 18:33:25 GMT',
+             'x-amz-server-side-encryption': 'AES256'
+             })
         http_response.content = ''
+        http_response.request.method = 'HEAD'
         put_object = self.s3.get_operation('HeadObject')
-        expected = {"AcceptRanges": "bytes", 
-                    "ContentType": "binary/octet-stream", 
-                    "LastModified": "Tue, 20 Aug 2013 18:33:25 GMT", 
-                    "ContentLength": "265", 
-                    "ETag": '"40d06eb6194712ac1c915783004ef730"', 
+        expected = {"AcceptRanges": "bytes",
+                    "ContentType": "binary/octet-stream",
+                    "LastModified": "Tue, 20 Aug 2013 18:33:25 GMT",
+                    "ContentLength": "265",
+                    "ETag": '"40d06eb6194712ac1c915783004ef730"',
                     "ServerSideEncryption": "AES256"
                     }
-        response_data = get_response(self.session, put_object, http_response)[1]
+        response_data = get_response(self.session, put_object,
+                                     http_response)[1]
+        self.assertEqual(response_data, expected)
+
+    def test_list_objects_with_invalid_content_length(self):
+        http_response = Mock()
+        http_response.encoding = 'utf-8'
+        http_response.headers = CaseInsensitiveDict(
+            {'Date': 'Thu, 22 Aug 2013 02:11:57 GMT',
+             # We say we have 265 bytes but we're returning 0,
+             # this should raise an exception because this is not
+             # a HEAD request.
+             'Content-Length': '265',
+             'x-amz-request-id': '2B74ECB010FF029E',
+             'ETag': '"40d06eb6194712ac1c915783004ef730"',
+             'Server': 'AmazonS3',
+             'content-type': 'binary/octet-stream',
+             'Content-Type': 'binary/octet-stream',
+             'accept-ranges': 'bytes',
+             'Last-Modified': 'Tue, 20 Aug 2013 18:33:25 GMT',
+             'x-amz-server-side-encryption': 'AES256'
+             })
+        http_response.content = ''
+        http_response.request.method = 'GET'
+        list_objects = self.s3.get_operation('ListObjects')
+        expected = {"AcceptRanges": "bytes",
+                    "ContentType": "binary/octet-stream",
+                    "LastModified": "Tue, 20 Aug 2013 18:33:25 GMT",
+                    "ContentLength": "265",
+                    "ETag": '"40d06eb6194712ac1c915783004ef730"',
+                    "ServerSideEncryption": "AES256"
+                    }
+        with self.assertRaises(IncompleteReadError):
+            response_data = get_response(self.session, list_objects,
+                                         http_response)[1]
+
+    def test_head_object_with_json(self):
+        http_response = Mock()
+        http_response.encoding = 'utf-8'
+        http_response.headers = CaseInsensitiveDict(
+            {'Date': 'Thu, 22 Aug 2013 02:11:57 GMT',
+             'Content-Length': '0',
+             'x-amz-request-id': '2B74ECB010FF029E',
+             'ETag': '"40d06eb6194712ac1c915783004ef730"',
+             'Server': 'AmazonS3',
+             'content-type': 'application/json',
+             'Content-Type': 'application/json',
+             'accept-ranges': 'bytes',
+             'Last-Modified': 'Tue, 20 Aug 2013 18:33:25 GMT',
+             'x-amz-server-side-encryption': 'AES256'})
+        http_response.content = ''
+        put_object = self.s3.get_operation('HeadObject')
+        expected = {"AcceptRanges": "bytes",
+                    "ContentType": "application/json",
+                    "LastModified": "Tue, 20 Aug 2013 18:33:25 GMT",
+                    "ContentLength": "0",
+                    "ETag": '"40d06eb6194712ac1c915783004ef730"',
+                    "ServerSideEncryption": "AES256"
+                    }
+        response_data = get_response(self.session, put_object,
+                                     http_response)[1]
         self.assertEqual(response_data, expected)

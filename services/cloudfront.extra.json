@@ -8,31 +8,31 @@
     }
   },
   "pagination": {
-    "ListCloudFrontOriginAccessIdentities2013_05_12": {
+    "ListCloudFrontOriginAccessIdentities": {
       "input_token": ["Marker"],
       "limit_key": "MaxItems",
-      "more_key": "IsTruncated",
+      "more_results": "IsTruncated",
       "output_token": ["NextMarker"],
       "result_key": "CloudFrontOriginAccessIdentityList"
     },
-    "ListDistributions2013_05_12": {
+    "ListDistributions": {
       "input_token": ["Marker"],
       "limit_key": "MaxItems",
-      "more_key": "IsTruncated",
+      "more_results": "IsTruncated",
       "output_token": ["NextMarker"],
       "result_key": "DistributionList"
     },
-    "ListInvalidations2013_05_12": {
+    "ListInvalidations": {
       "input_token": ["Marker"],
       "limit_key": "MaxItems",
-      "more_key": "IsTruncated",
+      "more_results": "IsTruncated",
       "output_token": ["NextMarker"],
       "result_key": "InvalidationList"
     },
-    "ListStreamingDistributions2013_05_12": {
+    "ListStreamingDistributions": {
       "input_token": ["Marker"],
       "limit_key": "MaxItems",
-      "more_key": "IsTruncated",
+      "more_results": "IsTruncated",
       "output_token": ["NextMarker"],
       "result_key": "StreamingDistributionList"
     }
@@ -40,6 +40,116 @@
   "transformations": {
     "operation-name": {
       "remove": "\\d{4}_\\d{2}_\\d{2}"
+    }
+  },
+  "operations": {
+    "DeleteCloudFrontOriginAccessIdentity": {
+      "input": {
+        "members": {
+          "Id": {
+            "required": true
+          }
+        }
+      }
+    },
+    "DeleteDistribution": {
+      "input": {
+        "members": {
+          "Id": {
+            "required": true
+          }
+        }
+      }
+    },
+    "DeleteStreamingDistribution": {
+      "input": {
+        "members": {
+          "Id": {
+            "required": true
+          }
+        }
+      }
+    },
+    "GetCloudFrontOriginAccessIdentity": {
+      "input": {
+        "members": {
+          "Id": {
+            "required": true
+          }
+        }
+      }
+    },
+    "GetCloudFrontOriginAccessIdentityConfig": {
+      "input": {
+        "members": {
+          "Id": {
+            "required": true
+          }
+        }
+      }
+    },
+    "GetDistribution": {
+      "input": {
+        "members": {
+          "Id": {
+            "required": true
+          }
+        }
+      }
+    },
+    "GetDistributionConfig": {
+      "input": {
+        "members": {
+          "Id": {
+            "required": true
+          }
+        }
+      }
+    },
+    "GetStreamingDistribution": {
+      "input": {
+        "members": {
+          "Id": {
+            "required": true
+          }
+        }
+      }
+    },
+    "GetStreamingDistributionConfig": {
+      "input": {
+        "members": {
+          "Id": {
+            "required": true
+          }
+        }
+      }
+    },
+    "UpdateCloudFrontOriginAccessIdentity": {
+      "input": {
+        "members": {
+          "Id": {
+            "required": true
+          }
+        }
+      }
+    },
+    "UpdateDistribution": {
+      "input": {
+        "members": {
+          "Id": {
+            "required": true
+          }
+        }
+      }
+    },
+    "UpdateStreamingDistribution": {
+      "input": {
+        "members": {
+          "Id": {
+            "required": true
+          }
+        }
+      }
     }
   }
 }

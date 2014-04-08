@@ -1,27 +1,19 @@
 #!/usr/bin/env
 # Copyright (c) 2012-2013 Mitch Garnaat http://garnaat.org/
-# Copyright 2012-2013 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# Copyright 2012-2014 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 #
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish, dis-
-# tribute, sublicense, and/or sell copies of the Software, and to permit
-# persons to whom the Software is furnished to do so, subject to the fol-
-# lowing conditions:
+# Licensed under the Apache License, Version 2.0 (the "License"). You
+# may not use this file except in compliance with the License. A copy of
+# the License is located at
 #
-# The above copyright notice and this permission notice shall be included
-# in all copies or substantial portions of the Software.
+# http://aws.amazon.com/apache2.0/
 #
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABIL-
-# ITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-# SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
-# WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-# IN THE SOFTWARE.
-#
-from tests import unittest
+# or in the "license" file accompanying this file. This file is
+# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
+# ANY KIND, either express or implied. See the License for the specific
+# language governing permissions and limitations under the License.
+
+from tests import unittest, create_session
 import os
 import logging
 import tempfile
@@ -53,7 +45,7 @@ class BaseSessionTest(unittest.TestCase):
         config_path = os.path.join(os.path.dirname(__file__), 'cfg',
                                    'foo_config')
         self.environ['FOO_CONFIG_FILE'] = config_path
-        self.session = botocore.session.get_session(self.env_vars)
+        self.session = create_session(session_vars=self.env_vars)
 
     def tearDown(self):
         self.environ_patch.stop()
@@ -84,7 +76,7 @@ class SessionTest(BaseSessionTest):
         del self.environ['FOO_REGION']
         saved_profile = self.environ['FOO_PROFILE']
         del self.environ['FOO_PROFILE']
-        session = botocore.session.get_session(self.env_vars)
+        session = create_session(session_vars=self.env_vars)
         self.assertEqual(session.get_variable('profile'), None)
         self.assertEqual(session.get_variable('region'), 'us-west-1')
         self.environ['FOO_REGION'] = saved_region
@@ -93,21 +85,21 @@ class SessionTest(BaseSessionTest):
     def test_profile_does_not_exist_raises_exception(self):
         # Given we have no profile:
         self.environ['FOO_PROFILE'] = 'profile_that_does_not_exist'
-        session = botocore.session.get_session(self.env_vars)
+        session = create_session(session_vars=self.env_vars)
         with self.assertRaises(botocore.exceptions.ProfileNotFound):
             session.get_config()
 
     def test_variable_does_not_exist(self):
-        session = botocore.session.get_session(self.env_vars)
+        session = create_session(session_vars=self.env_vars)
         self.assertIsNone(session.get_variable('foo/bar'))
 
     def test_get_aws_services_in_alphabetical_order(self):
-        session = botocore.session.get_session(self.env_vars)
-        services = session.get_data('aws')
+        session = create_session(session_vars=self.env_vars)
+        services = session.get_available_services()
         self.assertEqual(sorted(services), services)
 
     def test_profile_does_not_exist_with_default_profile(self):
-        session = botocore.session.get_session(self.env_vars)
+        session = create_session(session_vars=self.env_vars)
         config = session.get_config()
         # We should have loaded this properly, and we'll check
         # that foo_access_key which is defined in the config
@@ -121,7 +113,7 @@ class SessionTest(BaseSessionTest):
                                    'boto_config_empty')
         self.environ['FOO_CONFIG_FILE'] = config_path
         self.environ['FOO_PROFILE'] = 'default'
-        session = botocore.session.get_session(self.env_vars)
+        session = create_session(session_vars=self.env_vars)
         # In this case, even though we specified default, because
         # the boto_config_empty config file does not have a default
         # profile, we should be raising an exception.
@@ -167,7 +159,8 @@ class SessionTest(BaseSessionTest):
 
     def test_emitter_can_be_passed_in(self):
         events = EventHooks()
-        session = botocore.session.Session(self.env_vars, events)
+        session = create_session(session_vars=self.env_vars,
+                                 event_hooks=events)
         calls = []
         handler = lambda **kwargs: calls.append(kwargs)
         events.register('foo', handler)
@@ -176,18 +169,12 @@ class SessionTest(BaseSessionTest):
         self.assertEqual(len(calls), 1)
 
     def test_emit_first_non_none(self):
-        session = botocore.session.Session(self.env_vars)
+        session = create_session(session_vars=self.env_vars)
         session.register('foo', lambda **kwargs: None)
         session.register('foo', lambda **kwargs: 'first')
         session.register('foo', lambda **kwargs: 'second')
         response = session.emit_first_non_none_response('foo')
         self.assertEqual(response, 'first')
-
-    def test_available_events(self):
-        self.assertTrue('after-call' in botocore.session.AllEvents)
-        self.assertTrue('after-parsed' in botocore.session.AllEvents)
-        self.assertTrue('before-call' in botocore.session.AllEvents)
-        self.assertTrue('service-created' in botocore.session.AllEvents)
 
     def test_create_events(self):
         event = self.session.create_event('before-call', 'foo', 'bar')
@@ -218,7 +205,7 @@ class SessionTest(BaseSessionTest):
     def test_general_purpose_logger(self, formatter, file_handler, get_logger):
         self.session.set_stream_logger('foo.bar', 'ERROR', format_string='foo')
         get_logger.assert_called_with('foo.bar')
-        get_logger.return_value.setLevel.assert_called_with('ERROR')
+        get_logger.return_value.setLevel.assert_called_with(logging.DEBUG)
         formatter.assert_called_with('foo')
 
     def test_register_with_unique_id(self):
@@ -256,6 +243,48 @@ class TestBuiltinEventHandlers(BaseSessionTest):
                                            include_builtin_handlers=True)
         session.emit('foo')
         self.assertTrue(self.foo_called)
+
+
+class TestSessionConfigurationVars(BaseSessionTest):
+    def test_per_session_config_vars(self):
+        self.session.session_var_map['foobar'] = (None, 'FOOBAR', 'default')
+        # Default value.
+        self.assertEqual(self.session.get_config_variable('foobar'), 'default')
+        # Retrieve from os environment variable.
+        environ = {'FOOBAR': 'fromenv'}
+        with mock.patch('os.environ', environ):
+            self.assertEqual(self.session.get_config_variable('foobar'), 'fromenv')
+
+        # Explicit override.
+        self.session.set_config_variable('foobar', 'session-instance')
+        self.assertEqual(self.session.get_config_variable('foobar'),
+                         'session-instance')
+
+        # Can disable this check via the ``methods`` arg.
+        self.assertEqual(self.session.get_config_variable(
+            'foobar', methods=('env', 'config')), 'default')
+
+    def test_default_value_can_be_overriden(self):
+        self.session.session_var_map['foobar'] = (None, 'FOOBAR', 'default')
+        # Default value.
+        self.assertEqual(self.session.get_config_variable('foobar'), 'default')
+        self.assertEqual(
+            self.session.get_config_variable('foobar', default='per-call-default'),
+            'per-call-default')
+
+
+class TestSessionUserAgent(BaseSessionTest):
+    def test_can_change_user_agent_name(self):
+        self.session.user_agent_name = 'something-else'
+        self.assertTrue(self.session.user_agent().startswith('something-else'))
+
+    def test_can_change_user_agent_version(self):
+        self.session.user_agent_version = '24.0'
+        self.assertTrue(self.session.user_agent().startswith('Botocore/24.0'))
+
+    def test_can_append_to_user_agent(self):
+        self.session.user_agent_extra = 'custom-thing/other'
+        self.assertTrue(self.session.user_agent().endswith('custom-thing/other'))
 
 
 if __name__ == "__main__":

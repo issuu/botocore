@@ -3,10 +3,10 @@
     "metadata": {
       "regions": {
         "us-east-1": null,
-        "ap-southeast-1": null,
-        "ap-southeast-2": null,
-        "us-west-2": null,
         "us-west-1": null,
+        "us-west-2": null,
+        "ap-northeast-1": null,
+        "ap-southeast-1": null,
         "eu-west-1": null
       },
       "protocols": [
@@ -15,6 +15,15 @@
     }
   },
   "operations": {
+    "CancelJob": {
+      "input": {
+        "members": {
+          "Id": {
+            "required": true
+          }
+        }
+      }
+    },
     "CreateJob": {
       "input": {
         "members": {
@@ -23,6 +32,118 @@
           }
         }
       }
+    },
+    "DeletePipeline": {
+      "input": {
+        "members": {
+          "Id": {
+            "required": true
+          }
+        }
+      }
+    },
+    "DeletePreset": {
+      "input": {
+        "members": {
+          "Id": {
+            "required": true
+          }
+        }
+      }
+    },
+    "ListJobsByPipeline": {
+      "input": {
+        "members": {
+          "PipelineId": {
+            "required": true
+          }
+        }
+      }
+    },
+    "ListJobsByStatus": {
+      "input": {
+        "members": {
+          "Status": {
+            "required": true
+          }
+        }
+      }
+    },
+    "ReadJob": {
+      "input": {
+        "members": {
+          "Id": {
+            "required": true
+          }
+        }
+      }
+    },
+    "ReadPipeline": {
+      "input": {
+        "members": {
+          "Id": {
+            "required": true
+          }
+        }
+      }
+    },
+    "ReadPreset": {
+      "input": {
+        "members": {
+          "Id": {
+            "required": true
+          }
+        }
+      }
+    },
+    "UpdatePipeline": {
+      "input": {
+        "members": {
+          "Id": {
+            "required": true
+          }
+        }
+      }
+    },
+    "UpdatePipelineNotifications": {
+      "input": {
+        "members": {
+          "Id": {
+            "required": true
+          }
+        }
+      }
+    },
+    "UpdatePipelineStatus": {
+      "input": {
+        "members": {
+          "Id": {
+            "required": true
+          }
+        }
+      }
+    }
+  },
+  "pagination": {
+    "ListJobsByPipeline": {
+      "input_token": "PageToken",
+      "output_token": "NextPageToken",
+      "result_key": "Jobs"
+    },
+    "ListJobsByStatus": {
+      "input_token": "PageToken",
+      "output_token": "NextPageToken",
+      "result_key": "Jobs"
+    },
+    "ListPipelines": {
+      "input_token": "PageToken",
+      "output_token": "NextPageToken",
+      "result_key": "Pipelines"
+    },
+    "ListPresets": {
+      "input_token": "PageToken",
+      "output_token": "NextPageToken",
+      "result_key": "Presets"
     }
   }
 }

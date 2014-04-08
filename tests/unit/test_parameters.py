@@ -1,26 +1,18 @@
 #!/usr/bin/env
 # Copyright (c) 2012-2013 Mitch Garnaat http://garnaat.org/
-# Copyright 2012-2013 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# Copyright 2012-2014 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 #
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish, dis-
-# tribute, sublicense, and/or sell copies of the Software, and to permit
-# persons to whom the Software is furnished to do so, subject to the fol-
-# lowing conditions:
+# Licensed under the Apache License, Version 2.0 (the "License"). You
+# may not use this file except in compliance with the License. A copy of
+# the License is located at
 #
-# The above copyright notice and this permission notice shall be included
-# in all copies or substantial portions of the Software.
+# http://aws.amazon.com/apache2.0/
 #
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABIL-
-# ITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-# SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
-# WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-# IN THE SOFTWARE.
-#
+# or in the "license" file accompanying this file. This file is
+# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
+# ANY KIND, either express or implied. See the License for the specific
+# language governing permissions and limitations under the License.
+
 from tests import unittest
 import time
 
@@ -99,6 +91,16 @@ class TestParameters(unittest.TestCase):
         p = botocore.parameters.StringParameter(None, name='foo')
         d = {}
         value = 'This is a test'
+        p.build_parameter_query(value, d)
+        self.assertEqual(d['foo'], value)
+        with self.assertRaises(botocore.exceptions.ValidationError):
+            p.build_parameter_query(value=1,
+                                    built_params=d)
+
+    def test_utf8_string(self):
+        p = botocore.parameters.StringParameter(None, name='foo')
+        d = {}
+        value = u'\u65e5\u672c\u8a9e'
         p.build_parameter_query(value, d)
         self.assertEqual(d['foo'], value)
         with self.assertRaises(botocore.exceptions.ValidationError):
@@ -330,6 +332,53 @@ class TestStructureParamaters(unittest.TestCase):
                              'group_name': 'unknown',
                              'Tenancy': 'baz'})
 
+    def test_snake_case_parameters(self):
+        """
+        Test support for snake case parameters
+        """
+        session = botocore.session.get_session()
+        service = session.get_service('dynamodb')
+        op = service.get_operation('UpdateTable')
+
+        # All CamelCase
+        params = {
+            'ProvisionedThroughput': {
+                'WriteCapacityUnits': 2,
+                'ReadCapacityUnits': 2
+            },
+            'TableName': 'test-table'
+        }
+        built_params = op.build_parameters(**params)
+        self.assertEqual(
+            built_params,
+            {
+                'ProvisionedThroughput': {
+                    'WriteCapacityUnits': 2,
+                    'ReadCapacityUnits': 2
+                },
+                'TableName': 'test-table'
+            }
+        )
+
+        # Mixed case
+        params = {
+            'provisioned_throughput': {
+                'WriteCapacityUnits': 2,
+                'ReadCapacityUnits': 2
+            },
+            'table_name': 'test-table'
+        }
+        built_params = op.build_parameters(**params)
+        self.assertEqual(
+            built_params,
+            {
+                'ProvisionedThroughput': {
+                    'WriteCapacityUnits': 2,
+                    'ReadCapacityUnits': 2
+                },
+                'TableName': 'test-table'
+            }
+        )
 
 
 if __name__ == "__main__":

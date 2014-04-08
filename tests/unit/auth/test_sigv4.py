@@ -1,24 +1,16 @@
-# Copyright (c) 2013 Amazon.com, Inc. or its affiliates.  All Rights Reserved
+# Copyright 2012-2014 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 #
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish, dis-
-# tribute, sublicense, and/or sell copies of the Software, and to permit
-# persons to whom the Software is furnished to do so, subject to the fol-
-# lowing conditions:
+# Licensed under the Apache License, Version 2.0 (the "License"). You
+# may not use this file except in compliance with the License. A copy of
+# the License is located at
 #
-# The above copyright notice and this permission notice shall be included
-# in all copies or substantial portions of the Software.
+# http://aws.amazon.com/apache2.0/
 #
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABIL-
-# ITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-# SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
-# WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-# IN THE SOFTWARE.
-#
+# or in the "license" file accompanying this file. This file is
+# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
+# ANY KIND, either express or implied. See the License for the specific
+# language governing permissions and limitations under the License.
+
 """Signature Version 4 test suite.
 
 AWS provides a test suite for signature version 4:
@@ -33,14 +25,16 @@ dynamically generate testcases based on these files.
 import os
 import logging
 import io
+import datetime
 from six import BytesIO
 from six.moves import BaseHTTPServer
 import six
 
 import nose.tools as t
 from nose import with_setup
+import mock
 
-from botocore.auth import SigV4Auth
+import botocore.auth
 from botocore.awsrequest import AWSRequest
 from botocore.credentials import Credentials
 
@@ -56,7 +50,6 @@ CREDENTIAL_SCOPE = "KEYNAME/20110909/us-west-1/s3/aws4_request"
 SECRET_KEY = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY"
 ACCESS_KEY = 'AKIDEXAMPLE'
 DATE_STRING = 'Mon, 09 Sep 2011 23:36:00 GMT'
-TIMESTAMP = '20110909T233600Z'
 
 TESTSUITE_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), 'aws4_testsuite')
@@ -101,12 +94,19 @@ class RawHTTPRequest(BaseHTTPServer.BaseHTTPRequestHandler):
 
 
 def test_generator():
+    datetime_patcher = mock.patch.object(
+        botocore.auth.datetime, 'datetime',
+        mock.Mock(wraps=datetime.datetime)
+    )
+    mocked_datetime = datetime_patcher.start()
+    mocked_datetime.utcnow.return_value = datetime.datetime(2011, 9, 9, 23, 36)
     for test_case in set(os.path.splitext(i)[0]
                          for i in os.listdir(TESTSUITE_DIR)):
         if test_case in TESTS_TO_IGNORE:
             log.debug("Skipping test: %s", test_case)
             continue
         yield (_test_signature_version_4, test_case)
+    datetime_patcher.stop()
 
 
 def create_request_from_raw_request(raw_request):
@@ -140,8 +140,7 @@ def _test_signature_version_4(test_case):
     test_case = _SignatureTestCase(test_case)
     request = create_request_from_raw_request(test_case.raw_request)
 
-    auth = SigV4Auth(test_case.credentials, 'host', 'us-east-1')
-    auth.timestamp = TIMESTAMP
+    auth = botocore.auth.SigV4Auth(test_case.credentials, 'host', 'us-east-1')
 
     actual_canonical_request = auth.canonical_request(request)
     assert_equal(actual_canonical_request, test_case.canonical_request,

@@ -1,30 +1,23 @@
 #!/usr/bin/env
 # Copyright (c) 2012-2013 Mitch Garnaat http://garnaat.org/
-# Copyright 2012-2013 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# Copyright 2012-2014 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 #
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish, dis-
-# tribute, sublicense, and/or sell copies of the Software, and to permit
-# persons to whom the Software is furnished to do so, subject to the fol-
-# lowing conditions:
+# Licensed under the Apache License, Version 2.0 (the "License"). You
+# may not use this file except in compliance with the License. A copy of
+# the License is located at
 #
-# The above copyright notice and this permission notice shall be included
-# in all copies or substantial portions of the Software.
+# http://aws.amazon.com/apache2.0/
 #
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABIL-
-# ITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-# SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
-# WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-# IN THE SOFTWARE.
-#
+# or in the "license" file accompanying this file. This file is
+# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
+# ANY KIND, either express or implied. See the License for the specific
+# language governing permissions and limitations under the License.
+
 from tests import unittest
 
 import mock
-from requests import ConnectionError
+from botocore.vendored.requests import ConnectionError
+from botocore.vendored.requests.packages.urllib3.exceptions import ClosedPoolError
 
 from botocore import retryhandler
 from botocore.exceptions import ChecksumError
@@ -219,6 +212,21 @@ class TestCreateRetryConfiguration(unittest.TestCase):
         with self.assertRaises(ValueError):
             sleep_time = handler(response=None, attempts=1,
                                 caught_exception=ValueError())
+
+    def test_retry_pool_closed_errors(self):
+        # A ClosedPoolError is retried (this is a workaround for a urllib3
+        # bug).  Can be removed once we upgrade to requests 2.0.0.
+        handler = retryhandler.create_retry_handler(
+            self.retry_config, operation_name='OperationBar')
+        # 4th attempt is retried.
+        sleep_time = handler(
+            response=None, attempts=4,
+            caught_exception=ClosedPoolError('FakePool', 'Message'))
+        self.assertEqual(sleep_time, 8)
+        # But the 5th time propogates the error.
+        with self.assertRaises(ClosedPoolError):
+            handler(response=None, attempts=10,
+                    caught_exception=ClosedPoolError('FakePool', 'Message'))
 
     def test_create_retry_handler_with_no_operation(self):
         handler = retryhandler.create_retry_handler(

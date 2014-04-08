@@ -1,24 +1,16 @@
-# Copyright 2013 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# Copyright 2012-2014 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 #
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish, dis-
-# tribute, sublicense, and/or sell copies of the Software, and to permit
-# persons to whom the Software is furnished to do so, subject to the fol-
-# lowing conditions:
+# Licensed under the Apache License, Version 2.0 (the "License"). You
+# may not use this file except in compliance with the License. A copy of
+# the License is located at
 #
-# The above copyright notice and this permission notice shall be included
-# in all copies or substantial portions of the Software.
+# http://aws.amazon.com/apache2.0/
 #
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABIL-
-# ITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-# SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
-# WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-# IN THE SOFTWARE.
-#
+# or in the "license" file accompanying this file. This file is
+# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
+# ANY KIND, either express or implied. See the License for the specific
+# language governing permissions and limitations under the License.
+
 """Builtin event handlers.
 
 This module contains builtin handlers for events emitted by botocore.
@@ -31,12 +23,18 @@ import re
 
 import six
 
-from botocore.compat import urlsplit, urlunsplit, unquote, json
+from botocore.compat import urlsplit, urlunsplit, unquote, json, quote
 from botocore import retryhandler
+import botocore.auth
 
 
 logger = logging.getLogger(__name__)
-LabelRE = re.compile('[a-z0-9][a-z0-9\-]*[a-z0-9]')
+LABEL_RE = re.compile('[a-z0-9][a-z0-9\-]*[a-z0-9]')
+RESTRICTED_REGIONS = [
+    'us-gov-west-1',
+    'fips-us-gov-west-1',
+]
+
 
 
 def decode_console_output(event_name, shape, value, **kwargs):
@@ -91,7 +89,7 @@ def check_dns_name(bucket_name):
     if n == 1:
         if not bucket_name.isalnum():
             return False
-    match = LabelRE.match(bucket_name)
+    match = LABEL_RE.match(bucket_name)
     if match is None or match.end() != len(bucket_name):
         return False
     return True
@@ -110,11 +108,13 @@ def fix_s3_host(event_name, endpoint, request, auth, **kwargs):
     parts = urlsplit(request.url)
     auth.auth_path = parts.path
     path_parts = parts.path.split('/')
+    if isinstance(auth, botocore.auth.S3SigV4Auth):
+        return
     if len(path_parts) > 1:
         bucket_name = path_parts[1]
         logger.debug('Checking for DNS compatible bucket for: %s',
                      request.url)
-        if check_dns_name(bucket_name):
+        if check_dns_name(bucket_name) and _allowed_region(endpoint.region_name):
             # If the operation is on a bucket, the auth_path must be
             # terminated with a '/' character.
             if len(path_parts) == 2:
@@ -130,6 +130,10 @@ def fix_s3_host(event_name, endpoint, request, auth, **kwargs):
         else:
             logger.debug('Not changing URI, bucket is not DNS compatible: %s',
                          bucket_name)
+
+
+def _allowed_region(region_name):
+    return region_name not in RESTRICTED_REGIONS
 
 
 def register_retries_for_service(service, **kwargs):
@@ -160,6 +164,40 @@ def _register_for_operations(config, session, service_name):
                          handler, unique_id=unique_id)
 
 
+def maybe_switch_to_s3sigv4(service, region_name, **kwargs):
+    if region_name.startswith('cn-'):
+        # This region only supports signature version 4 for
+        # s3, so we need to change the service's signature version.
+        service.signature_version = 's3v4'
+
+
+def maybe_switch_to_sigv4(service, region_name, **kwargs):
+    if region_name.startswith('cn-'):
+        # This region only supports signature version 4 for
+        # s3, so we need to change the service's signature version.
+        service.signature_version = 'v4'
+
+
+def signature_overrides(service_data, service_name, session, **kwargs):
+    config = session.get_config()
+    service_config = config.get(service_name)
+    if service_config is None or not isinstance(service_config, dict):
+        return
+    signature_version_override = service_config.get('signature_version')
+    if signature_version_override is not None:
+        logger.debug("Switching signature version for service %s "
+                     "to version %s based on config file override.",
+                     service_name, signature_version_override)
+        service_data['signature_version'] = signature_version_override
+
+
+def quote_source_header(params, **kwargs):
+    if params['headers'] and 'x-amz-copy-source' in params['headers']:
+        value = params['headers']['x-amz-copy-source']
+        params['headers']['x-amz-copy-source'] = quote(
+            value.encode('utf-8'), '/~')
+
+
 # This is a list of (event_name, handler).
 # When a Session is created, everything in this list will be
 # automatically registered with that Session.
@@ -173,6 +211,12 @@ BUILTIN_HANDLERS = [
     ('before-call.s3.PutBucketTagging', calculate_md5),
     ('before-call.s3.PutBucketLifecycle', calculate_md5),
     ('before-call.s3.PutBucketCors', calculate_md5),
+    ('before-call.s3.DeleteObjects', calculate_md5),
+    ('before-call.s3.UploadPartCopy', quote_source_header),
+    ('before-call.s3.CopyObject', quote_source_header),
     ('before-auth.s3', fix_s3_host),
     ('service-created', register_retries_for_service),
+    ('creating-endpoint.s3', maybe_switch_to_s3sigv4),
+    ('creating-endpoint.ec2', maybe_switch_to_sigv4),
+    ('service-data-loaded', signature_overrides),
 ]

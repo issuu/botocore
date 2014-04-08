@@ -1,0 +1,34 @@
+{
+  "extra": {
+    "metadata": {
+      "regions": {
+        "us-east-1": "https://kinesis.us-east-1.amazonaws.com"
+      },
+      "protocols": [
+        "https"
+      ]
+    }
+  },
+  "pagination": {
+    "DescribeStream": {
+      "input_token": "ExclusiveStartShardId",
+      "limit_key": "Limit",
+      "more_results": "StreamDescription.HasMoreShards",
+      "output_token": "StreamDescription.Shards[-1].ShardId",
+      "result_key": "StreamDescription.Shards"
+    },
+    "GetRecords": {
+      "input_token": "ShardIterator",
+      "limit_key": "Limit",
+      "output_token": "NextShardIterator",
+      "result_key": "Records"
+    },
+    "ListStreams": {
+      "input_token": "ExclusiveStartStreamName",
+      "limit_key": "Limit",
+      "more_results": "HasMoreStreams",
+      "output_token": "StreamNames[-1]",
+      "result_key": "StreamNames"
+    }
+  }
+}
