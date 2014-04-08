@@ -1,4 +1,4 @@
-botocore (0.18.0-1) unstable; urgency=low
+botocore (0.40.0-1) unstable; urgency=low
 
   * source package automatically created by stdeb 0.6.0
 
